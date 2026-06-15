@@ -21,7 +21,28 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-app.use('/exports', express.static('./exports'));
+app.use('/exports', express.static('./exports', {
+  setHeaders: (res, filePath) => {
+    const fileName = filePath.split('/').pop() || 'export.csv';
+    const encodedName = encodeURIComponent(fileName);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodedName}"; filename*=UTF-8''${encodedName}`);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  }
+}));
+
+app.get('/api/download/:fileName', async (req, res) => {
+  try {
+    const fileName = req.params.fileName;
+    const filePath = `./exports/${fileName}`;
+    
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    
+    res.sendFile(filePath, { root: '.' });
+  } catch (error: any) {
+    res.status(404).json({ error: '文件不存在' });
+  }
+});
 
 app.post('/api/batches', async (req, res) => {
   try {
@@ -339,7 +360,11 @@ app.post('/api/export/summary', async (req, res) => {
 
 app.get('/api/exports', async (req, res) => {
   try {
-    const records = await getExportRecords();
+    const { operator, exportType } = req.query as any;
+    const records = await getExportRecords({
+      downloadedBy: operator,
+      exportType
+    });
     res.json(records);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

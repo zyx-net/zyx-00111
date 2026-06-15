@@ -1,6 +1,34 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, saveDatabase } from './database.js';
-import { ExportRecord, ExportType, BatchComparisonResult, AnomalyReplay } from './types.js';
+import { ExportType, BatchComparisonResult, AnomalyReplay } from './types.js';
+
+export interface ExportRecord {
+  id: string;
+  exportType: ExportType;
+  params?: string;
+  downloadedAt: string;
+  downloadedBy?: string;
+  fileName?: string;
+  recordCount?: number;
+}
+
+function generateFileName(exportType: ExportType, timestamp?: number): string {
+  const now = timestamp || Date.now();
+  switch (exportType) {
+    case 'DETAIL':
+      return `energy_detail_${now}.csv`;
+    case 'SUMMARY':
+      return `energy_summary_${now}.csv`;
+    case 'BATCH_COMPARE':
+      return `batch_compare_${now}.csv`;
+    case 'REPLAY':
+      return `anomaly_replay_${now}.csv`;
+    case 'FILTERED':
+      return `filtered_anomalies_${now}.csv`;
+    default:
+      return `export_${now}.csv`;
+  }
+}
 
 function escapeCSVValue(value: any): string {
   if (value === null || value === undefined) {
@@ -204,13 +232,14 @@ export async function exportDetail(params: {
   });
 
   const csvContent = toCSV(exportData);
-  const fileName = `energy_detail_${Date.now()}.csv`;
+  const timestamp = Date.now();
+  const fileName = `energy_detail_${timestamp}.csv`;
   const filePath = await saveCSVFile(fileName, csvContent);
 
   const recordId = uuidv4();
   db.run(
-    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by) VALUES (?, ?, ?, ?, ?)`,
-    [recordId, 'DETAIL', JSON.stringify(params), now, downloadedBy || 'system']
+    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by, file_name, record_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [recordId, 'DETAIL', JSON.stringify(params), now, downloadedBy || 'system', fileName, exportData.length]
   );
   saveDatabase();
 
@@ -338,13 +367,14 @@ export async function exportSummary(params: {
   }
 
   const csvContent = toCSV([summary, ...summary.byType]);
-  const fileName = `energy_summary_${Date.now()}.csv`;
+  const timestamp = Date.now();
+  const fileName = `energy_summary_${timestamp}.csv`;
   const filePath = await saveCSVFile(fileName, csvContent);
 
   const recordId = uuidv4();
   db.run(
-    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by) VALUES (?, ?, ?, ?, ?)`,
-    [recordId, 'SUMMARY', JSON.stringify(params), now, downloadedBy || 'system']
+    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by, file_name, record_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [recordId, 'SUMMARY', JSON.stringify(params), now, downloadedBy || 'system', fileName, summary.totalCount]
   );
   saveDatabase();
 
@@ -359,9 +389,27 @@ export async function exportSummary(params: {
   return { filePath, record, summary, hasData: true };
 }
 
-export async function getExportRecords(): Promise<ExportRecord[]> {
+export async function getExportRecords(filters?: {
+  downloadedBy?: string;
+  exportType?: ExportType;
+}): Promise<ExportRecord[]> {
   const db = getDatabase();
-  const results = db.exec(`SELECT * FROM export_records ORDER BY downloaded_at DESC`);
+  let query = `SELECT * FROM export_records WHERE 1=1`;
+  const params: any[] = [];
+
+  if (filters?.downloadedBy) {
+    query += ` AND downloaded_by = ?`;
+    params.push(filters.downloadedBy);
+  }
+
+  if (filters?.exportType) {
+    query += ` AND export_type = ?`;
+    params.push(filters.exportType);
+  }
+
+  query += ` ORDER BY downloaded_at DESC`;
+
+  const results = db.exec(query, params);
 
   if (results.length === 0) return [];
 
@@ -478,13 +526,14 @@ export async function exportBatchCompare(
     trajectoryData.length > 0 ? toCSVNoBOM(trajectoryData) : '（无轨迹数据）'
   ].join('\r\n');
 
-  const fileName = `batch_compare_${Date.now()}.csv`;
+  const timestamp = Date.now();
+  const fileName = `batch_compare_${timestamp}.csv`;
   const filePath = await saveCSVFile(fileName, csvContent);
 
   const recordId = uuidv4();
   db.run(
-    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by) VALUES (?, ?, ?, ?, ?)`,
-    [recordId, 'BATCH_COMPARE', JSON.stringify({ batch1Id, batch2Id }), now, downloadedBy || 'system']
+    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by, file_name, record_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [recordId, 'BATCH_COMPARE', JSON.stringify({ batch1Id, batch2Id }), now, downloadedBy || 'system', fileName, comparison.newAnomalies.length + comparison.correctedAnomalies.length + comparison.ignoredAnomalies.length]
   );
   saveDatabase();
 
@@ -552,13 +601,14 @@ export async function exportReplay(
     toCSVNoBOM(timelineData)
   ].join('\r\n');
 
-  const fileName = `anomaly_replay_${replay.anomalyId}_${Date.now()}.csv`;
+  const timestamp = Date.now();
+  const fileName = `anomaly_replay_${replay.anomalyId}_${timestamp}.csv`;
   const filePath = await saveCSVFile(fileName, csvContent);
 
   const recordId = uuidv4();
   db.run(
-    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by) VALUES (?, ?, ?, ?, ?)`,
-    [recordId, 'REPLAY', JSON.stringify({ anomalyId: replay.anomalyId }), now, downloadedBy || 'system']
+    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by, file_name, record_count) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [recordId, 'REPLAY', JSON.stringify({ anomalyId: replay.anomalyId }), now, downloadedBy || 'system', fileName, replay.corrections.length]
   );
   saveDatabase();
 

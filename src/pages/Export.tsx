@@ -35,6 +35,7 @@ export function Export() {
   const [showLogs, setShowLogs] = useState(false);
   const [operationLogs, setOperationLogs] = useState<OperationLog[]>([]);
   const [logFilter, setLogFilter] = useState<'all' | 'mine'>('all');
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'mine'>('mine');
   const isSupervisor = currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPERVISOR';
 
   useEffect(() => {
@@ -60,14 +61,17 @@ export function Export() {
   useEffect(() => {
     const loadExportHistory = async () => {
       try {
-        const records = await api.export.list();
+        const filters = isSupervisor && historyFilter === 'all' 
+          ? undefined 
+          : { operator: currentOperator };
+        const records = await api.export.list(filters);
         setExportHistory(records);
       } catch (err) {
         console.error('Failed to load export history:', err);
       }
     };
     loadExportHistory();
-  }, []);
+  }, [historyFilter, currentOperator, isSupervisor]);
 
   useEffect(() => {
     if (showLogs) {
@@ -431,9 +435,35 @@ export function Export() {
 
         <div className="col-span-12 lg:col-span-4">
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <FileDown className="w-5 h-5 text-slate-500" />
-              <h2 className="text-lg font-semibold text-slate-800">导出记录</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <FileDown className="w-5 h-5 text-slate-500" />
+                <h2 className="text-lg font-semibold text-slate-800">导出记录</h2>
+              </div>
+              {isSupervisor && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setHistoryFilter('mine')}
+                    className={`px-3 py-1 text-xs rounded ${
+                      historyFilter === 'mine'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    我的记录
+                  </button>
+                  <button
+                    onClick={() => setHistoryFilter('all')}
+                    className={`px-3 py-1 text-xs rounded ${
+                      historyFilter === 'all'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    全部记录
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="space-y-3">
@@ -475,7 +505,26 @@ export function Export() {
                       </div>
                       <div className="mt-1 text-xs text-slate-400">
                         操作人: {record.downloadedBy || 'system'}
+                        {record.recordCount !== undefined && (
+                          <span className="ml-2">({record.recordCount} 条)</span>
+                        )}
                       </div>
+                      {record.fileName && (
+                        <button
+                          onClick={() => {
+                            const link = document.createElement('a');
+                            link.href = `${serverUrl}/exports/${record.fileName}`;
+                            link.download = record.fileName;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                          }}
+                          className="mt-2 text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                        >
+                          <Download className="w-3 h-3" />
+                          重新下载
+                        </button>
+                      )}
                     </div>
                   );
                 })

@@ -85,6 +85,8 @@ export interface ExportRecord {
   params?: string;
   downloadedAt: string;
   downloadedBy?: string;
+  fileName?: string;
+  recordCount?: number;
 }
 
 export interface DashboardStats {

@@ -202,7 +202,13 @@ export const api = {
         body: JSON.stringify({ filters, operator }),
       }),
 
-    list: () => fetchApi<ExportRecord[]>('/exports'),
+    list: (filters?: { operator?: string; exportType?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.operator) params.set('operator', filters.operator);
+      if (filters?.exportType) params.set('exportType', filters.exportType);
+      const query = params.toString();
+      return fetchApi<ExportRecord[]>(`/exports${query ? `?${query}` : ''}`);
+    },
   },
 
   logs: {

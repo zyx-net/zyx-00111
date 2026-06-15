@@ -19,6 +19,8 @@ export async function initDatabase(): Promise<Database> {
     const fileBuffer = readFileSync(DB_PATH);
     db = new SQL.Database(fileBuffer);
     db.run('PRAGMA foreign_keys = ON');
+    
+    migrateDatabaseSchema(db);
   } else {
     db = new SQL.Database();
     db.run('PRAGMA foreign_keys = ON');
@@ -28,6 +30,23 @@ export async function initDatabase(): Promise<Database> {
   }
 
   return db;
+}
+
+function migrateDatabaseSchema(database: Database) {
+  const tableInfo = database.exec("PRAGMA table_info(export_records)");
+  if (tableInfo.length === 0) return;
+  
+  const columns = tableInfo[0].values.map(row => row[1]);
+  
+  if (!columns.includes('file_name')) {
+    database.run("ALTER TABLE export_records ADD COLUMN file_name TEXT");
+  }
+  
+  if (!columns.includes('record_count')) {
+    database.run("ALTER TABLE export_records ADD COLUMN record_count INTEGER DEFAULT 0");
+  }
+  
+  saveDatabase();
 }
 
 function createTables(database: Database) {
@@ -107,7 +126,9 @@ function createTables(database: Database) {
       export_type TEXT NOT NULL,
       params TEXT,
       downloaded_at TEXT NOT NULL,
-      downloaded_by TEXT
+      downloaded_by TEXT,
+      file_name TEXT,
+      record_count INTEGER DEFAULT 0
     )
   `);
 
