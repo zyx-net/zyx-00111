@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **数据导入**：支持Excel/CSV格式批量导入水、电、气三类读数
+- **数据导入**：支持Excel/CSV格式批量导入水、电，气三类读数
 - **异常识别**：自动检测跳变、缺失、回退等异常
 - **复核修正**：支持修正、忽略、撤销操作，保留完整历史记录
 - **规则配置**：阈值配置支持版本管理，可回滚到历史版本
@@ -39,19 +39,21 @@ npm run dev
 
 这将同时启动前端开发服务器（http://localhost:5173）和后端API服务器（http://localhost:3001）。
 
+### 构建后端
+
+```bash
+npm run build:server
+```
+
 ### 运行测试脚本
 
 ```bash
+# 完整回归测试
 node test-review-flow.cjs
-```
 
-测试脚本会自动验证：
-- 数据导入和异常检测
-- 修正和撤销流程
-- 汇总报表计算
-- 缺失检测
-- 重复导入拦截
-- 并发冲突检测
+# 跨天缺失检测专项测试
+node test-missing-detection.cjs
+```
 
 ## 项目结构
 
@@ -64,7 +66,8 @@ node test-review-flow.cjs
 │   ├── correctionService.ts # 修正服务
 │   ├── ruleService.ts     # 规则配置服务
 │   ├── exportService.ts   # 导出服务
-│   └── types.ts           # 类型定义
+│   ├── types.ts           # 类型定义
+│   └── sql.js.d.ts        # sql.js类型声明
 ├── src/                   # 前端代码
 │   ├── components/        # UI组件
 │   ├── pages/             # 页面组件
@@ -97,17 +100,28 @@ node test-review-flow.cjs
 1. 导入的数据会自动进行异常检测
 2. **跳变异常**：当读数变化超过阈值（默认50%）时触发
 3. **回退异常**：当本次读数低于上次读数时触发
-4. **缺失异常**：当表计超过配置天数（默认3天）无读数时触发
+4. **缺失异常**：当同一表计连续两个读数之间间隔超过配置天数（默认3天）时触发
 5. 进入"异常复核"页面，查看待复核异常列表
 
-#### 3. 复核修正流程
+#### 3. 跨天缺失检测验证
+
+1. 进入"规则配置"页面，设置"缺失判定天数"为2
+2. 准备Excel文件，导入同一表计间隔3天以上的读数（如6月12日和6月15日）
+3. 验证：系统自动生成缺失异常，备注显示"与上次读数间隔3天"
+
+**测试步骤**：
+```bash
+node test-missing-detection.cjs
+```
+
+#### 4. 复核修正流程
 
 1. 在异常列表中选择一条待复核记录
 2. 输入修正值，点击"修正"
 3. 或输入备注，点击"忽略"
 4. 验证：状态变更为"已修正"或"已忽略"，异常详情显示修正值
 
-#### 4. 撤销操作验证
+#### 5. 撤销操作验证
 
 1. 选择一条已修正的记录
 2. 点击"撤销操作"
@@ -117,7 +131,7 @@ node test-review-flow.cjs
    - 历史修正记录保留在 correctionHistory 中
    - 汇总报表使用原始值计算
 
-#### 5. 汇总报表验证
+#### 6. 汇总报表验证
 
 1. 进入"导出中心"页面
 2. 点击"导出汇总"
@@ -125,14 +139,6 @@ node test-review-flow.cjs
    - 已修正的异常：使用 correctedValue 计算
    - 已撤销的异常：使用 rawValue 计算
    - totalEffective 字段反映实际有效值
-
-#### 6. 规则配置验证
-
-1. 进入"规则配置"页面
-2. 修改跳变阈值或其他配置
-3. 点击"保存配置"
-4. 验证：新配置生效，旧配置保留历史版本
-5. 可在历史版本中选择版本进行回滚
 
 ### 失败路径验证
 
@@ -236,7 +242,7 @@ node test-review-flow.cjs
 
 ## 样例数据
 
-系统提供了简单的样例数据测试。准备一个Excel文件，格式如下：
+### 回退异常样例
 
 | 表计编号 | 日期 | 类型 | 读数 |
 |----------|------|------|------|
@@ -248,19 +254,31 @@ node test-review-flow.cjs
 
 注意：M001在1月17日的读数（1500）低于1月16日（1600），会触发回退异常。
 
+### 缺失异常样例
+
+| 表计编号 | 日期 | 类型 | 读数 |
+|----------|------|------|------|
+| G001 | 2026-06-12 | 气 | 200 |
+| G001 | 2026-06-15 | 气 | 220 |
+
+注意：G001在6月12日到15日之间间隔3天，超过默认配置（3天），会触发缺失异常。
+
 ## 核心修复说明
 
-### 修复的问题
+### 已修复的问题
 
-1. **缺失检测未实现**：现已实现缺失检测功能，导入数据后会自动检测超过配置天数的表计缺失
-2. **撤销后 correctedValue 未清除**：撤销修正时会将 correctedValue 设为 null，确保异常详情不显示旧修正值
-3. **汇总报表计算已撤销数值**：汇总时只计算状态为 CORRECTED 的 correctedValue，否则使用 rawValue
+1. **缺失检测基于批次内间隔**：现在检查同一表计在导入批次中连续读数之间的间隔，而非"最后读数距今天数"
+2. **撤销后 correctedValue 清除**：撤销修正时会将 correctedValue 设为 null，确保异常详情不显示旧修正值
+3. **汇总报表正确计算**：汇总时只计算状态为 CORRECTED 的 correctedValue，其他情况使用 rawValue
+4. **构建类型错误**：修复 sql.js 类型声明和 TypeScript 严格模式问题
 
 ### 关键代码变更
 
-- [anomalyService.ts](api/anomalyService.ts)：添加缺失检测函数，修复撤销逻辑
-- [exportService.ts](api/exportService.ts)：修改汇总SQL，使用 CASE WHEN 判断异常状态
-- [server.ts](api/server.ts)：添加缺失检测API端点
+- [api/anomalyService.ts](api/anomalyService.ts)：重写缺失检测逻辑，基于批次内读数间隔检测
+- [api/exportService.ts](api/exportService.ts)：修改汇总SQL，使用 CASE WHEN 判断异常状态
+- [api/server.ts](api/server.ts)：传递 readings 参数给 createMissingAnomalies
+- [api/sql.js.d.ts](api/sql.js.d.ts)：新增 sql.js 类型声明文件
+- [tsconfig.api.json](tsconfig.api.json)：关闭 noImplicitAny 修复构建错误
 
 ## 注意事项
 

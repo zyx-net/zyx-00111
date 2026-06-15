@@ -73,55 +73,75 @@ function getDetectionRules(): DetectionRule[] {
   return rules;
 }
 
-export async function detectMissingReadings(): Promise<Array<{ meterId: string; meterType: string; lastReadingDate: string; daysMissing: number }>> {
+export async function detectMissingReadings(readings?: MeterReading[]): Promise<Array<{ meterId: string; meterType: string; readingId: string; gapDays: number }>> {
   const db = getDatabase();
 
   const missingDaysResult = db.exec(`SELECT config_value FROM rule_configs WHERE config_key = 'missingDays' AND effective_to IS NULL ORDER BY version DESC LIMIT 1`);
   const missingDays = missingDaysResult[0]?.values[0]?.[0] ? Number(missingDaysResult[0].values[0][0]) : 3;
 
-  const today = new Date();
-  const cutoffDate = new Date(today);
-  cutoffDate.setDate(cutoffDate.getDate() - missingDays);
-  const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+  const missingMeters: Array<{ meterId: string; meterType: string; readingId: string; gapDays: number }> = [];
 
-  const metersResult = db.exec(`
-    SELECT DISTINCT meter_id, meter_type 
-    FROM meter_readings
-  `);
+  if (readings && readings.length > 0) {
+    const readingsByMeter = new Map<string, MeterReading[]>();
+    for (const reading of readings) {
+      const existing = readingsByMeter.get(reading.meterId) || [];
+      existing.push(reading);
+      readingsByMeter.set(reading.meterId, existing);
+    }
 
-  if (metersResult.length === 0) return [];
+    for (const [meterId, meterReadings] of readingsByMeter) {
+      const sortedReadings = meterReadings.sort((a, b) => 
+        new Date(a.readingDate).getTime() - new Date(b.readingDate).getTime()
+      );
 
-  const missingMeters: Array<{ meterId: string; meterType: string; lastReadingDate: string; daysMissing: number }> = [];
+      for (let i = 1; i < sortedReadings.length; i++) {
+        const prevDate = new Date(sortedReadings[i - 1].readingDate);
+        const currDate = new Date(sortedReadings[i].readingDate);
+        const daysDiff = Math.floor((currDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24));
 
-  for (const row of metersResult[0].values) {
-    const meterId = row[0] as string;
-    const meterType = row[1] as string;
-
-    const lastReadingResult = db.exec(`
-      SELECT MAX(reading_date) as last_date
-      FROM meter_readings
-      WHERE meter_id = ?
-    `, [meterId]);
-
-    if (lastReadingResult.length > 0 && lastReadingResult[0].values.length > 0) {
-      const lastDate = lastReadingResult[0].values[0][0] as string;
-      const lastDateObj = new Date(lastDate);
-      const daysDiff = Math.floor((today.getTime() - lastDateObj.getTime()) / (1000 * 60 * 60 * 24));
-
-      if (daysDiff >= missingDays) {
-        const existingMissingAnomaly = db.exec(`
-          SELECT a.id FROM anomalies a
-          JOIN meter_readings mr ON a.reading_id = mr.id
-          WHERE mr.meter_id = ? AND a.anomaly_type = 'MISSING' AND a.status = 'PENDING'
-        `, [meterId]);
-
-        if (existingMissingAnomaly.length === 0 || existingMissingAnomaly[0].values.length === 0) {
+        if (daysDiff > missingDays) {
           missingMeters.push({
             meterId,
-            meterType,
-            lastReadingDate: lastDate,
-            daysMissing: daysDiff
+            meterType: sortedReadings[i].meterType,
+            readingId: sortedReadings[i].id,
+            gapDays: daysDiff
           });
+        }
+      }
+    }
+  } else {
+    const metersResult = db.exec(`
+      SELECT DISTINCT meter_id, meter_type 
+      FROM meter_readings
+      ORDER BY meter_id
+    `);
+
+    if (metersResult.length === 0) return [];
+
+    for (const row of metersResult[0].values) {
+      const meterId = row[0] as string;
+      const meterType = row[1] as string;
+
+      const readingsResult = db.exec(`
+        SELECT id, reading_date FROM meter_readings
+        WHERE meter_id = ?
+        ORDER BY reading_date
+      `, [meterId]);
+
+      if (readingsResult.length > 0 && readingsResult[0].values.length >= 2) {
+        for (let i = 1; i < readingsResult[0].values.length; i++) {
+          const prevDate = new Date(readingsResult[0].values[i - 1][1] as string);
+          const currDate = new Date(readingsResult[0].values[i][1] as string);
+          const daysDiff = Math.floor((currDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24));
+
+          if (daysDiff > missingDays) {
+            missingMeters.push({
+              meterId,
+              meterType,
+              readingId: readingsResult[0].values[i][0] as string,
+              gapDays: daysDiff
+            });
+          }
         }
       }
     }
@@ -130,34 +150,37 @@ export async function detectMissingReadings(): Promise<Array<{ meterId: string; 
   return missingMeters;
 }
 
-export async function createMissingAnomalies(): Promise<Anomaly[]> {
+export async function createMissingAnomalies(readings?: MeterReading[]): Promise<Anomaly[]> {
   const db = getDatabase();
-  const missingMeters = await detectMissingReadings();
+  const missingMeters = await detectMissingReadings(readings);
   const anomalies: Anomaly[] = [];
   const now = new Date().toISOString();
 
   for (const meter of missingMeters) {
-    const lastReadingResult = db.exec(`
-      SELECT id FROM meter_readings
-      WHERE meter_id = ? AND reading_date = ?
-    `, [meter.meterId, meter.lastReadingDate]);
+    const existingMissingAnomaly = db.exec(`
+      SELECT a.id FROM anomalies a
+      WHERE a.reading_id = ? AND a.anomaly_type = 'MISSING' AND a.status = 'PENDING'
+    `, [meter.readingId]);
 
-    if (lastReadingResult.length > 0 && lastReadingResult[0].values.length > 0) {
-      const readingId = lastReadingResult[0].values[0][0] as string;
-
+    if (existingMissingAnomaly.length === 0 || existingMissingAnomaly[0].values.length === 0) {
       const anomalyId = uuidv4();
       db.run(
         `INSERT INTO anomalies (id, reading_id, anomaly_type, detected_at, status, remark) VALUES (?, ?, ?, ?, ?, ?)`,
-        [anomalyId, readingId, 'MISSING', now, 'PENDING', `已超过 ${meter.daysMissing} 天无读数`]
+        [anomalyId, meter.readingId, 'MISSING', now, 'PENDING', `与上次读数间隔 ${meter.gapDays} 天`]
+      );
+
+      db.run(
+        `UPDATE meter_readings SET status = 'ABNORMAL', updated_at = ? WHERE id = ?`,
+        [now, meter.readingId]
       );
 
       anomalies.push({
         id: anomalyId,
-        readingId,
+        readingId: meter.readingId,
         anomalyType: 'MISSING',
         detectedAt: now,
         status: 'PENDING',
-        remark: `已超过 ${meter.daysMissing} 天无读数`
+        remark: `与上次读数间隔 ${meter.gapDays} 天`
       });
     }
   }

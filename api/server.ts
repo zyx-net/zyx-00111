@@ -48,7 +48,7 @@ app.post('/api/batches', async (req, res) => {
     const readingsResult = await getReadingsByBatchId(batch.id);
     const detectionResults = await detectAnomalies(readingsResult);
     await createAnomalyRecords(detectionResults);
-    await createMissingAnomalies();
+    await createMissingAnomalies(readingsResult);
     await updateBatchAnomalyCount(batch.id);
 
     const updatedBatch = await getBatchById(batch.id);
