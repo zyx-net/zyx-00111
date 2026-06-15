@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { api } from '../utils/api';
+import { api, getApiServer } from '../utils/api';
 import { useStore } from '../store';
-import { FileDown, FileText, BarChart3, Download, Calendar } from 'lucide-react';
+import { FileDown, FileText, BarChart3, Download, Calendar, Filter } from 'lucide-react';
 
 export function Export() {
   const currentOperator = useStore(state => state.currentOperator);
-  const [exportType, setExportType] = useState<'detail' | 'summary'>('detail');
+  const currentUser = useStore(state => state.currentUser);
+  const [exportType, setExportType] = useState<'detail' | 'summary' | 'filtered'>('detail');
   const [dateFrom, setDateFrom] = useState(() => {
     const saved = localStorage.getItem('export_dateFrom');
     return saved || '';
@@ -18,10 +19,19 @@ export function Export() {
     const saved = localStorage.getItem('export_meterType');
     return saved || '';
   });
+  const [filterStatus, setFilterStatus] = useState(() => {
+    const saved = localStorage.getItem('export_filterStatus');
+    return saved || '';
+  });
+  const [filterType, setFilterType] = useState(() => {
+    const saved = localStorage.getItem('export_filterType');
+    return saved || '';
+  });
   const [loading, setLoading] = useState(false);
   const [exportHistory, setExportHistory] = useState<any[]>([]);
   const [lastSummary, setLastSummary] = useState<any>(null);
   const [exportMessage, setExportMessage] = useState<{type: 'success' | 'warning' | 'error', text: string} | null>(null);
+  const isSupervisor = currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPERVISOR';
 
   useEffect(() => {
     localStorage.setItem('export_dateFrom', dateFrom);
@@ -35,18 +45,28 @@ export function Export() {
     localStorage.setItem('export_meterType', meterType);
   }, [meterType]);
 
+  useEffect(() => {
+    localStorage.setItem('export_filterStatus', filterStatus);
+  }, [filterStatus]);
+
+  useEffect(() => {
+    localStorage.setItem('export_filterType', filterType);
+  }, [filterType]);
+
   const handleExport = async () => {
     setLoading(true);
     setExportMessage(null);
     try {
-      const params: any = {
-        operator: currentOperator
-      };
-      if (dateFrom) params.dateFrom = dateFrom;
-      if (dateTo) params.dateTo = dateTo;
-      if (meterType) params.meterType = meterType;
+      const serverUrl = getApiServer();
 
       if (exportType === 'detail') {
+        const params: any = {
+          operator: currentOperator
+        };
+        if (dateFrom) params.dateFrom = dateFrom;
+        if (dateTo) params.dateTo = dateTo;
+        if (meterType) params.meterType = meterType;
+
         const result = await api.export.detail(params);
 
         if (result.success === false) {
@@ -57,9 +77,8 @@ export function Export() {
           return;
         }
 
-        const baseUrl = window.location.origin;
         const link = document.createElement('a');
-        link.href = `${baseUrl}${result.filePath}`;
+        link.href = `${serverUrl}${result.filePath}`;
         link.download = result.filePath.split('/').pop() || 'energy_detail.csv';
         document.body.appendChild(link);
         link.click();
@@ -69,12 +88,26 @@ export function Export() {
           type: 'success',
           text: `导出成功，共 ${result.recordCount} 条记录`
         });
-      } else {
+      } else if (exportType === 'summary') {
+        const params: any = {
+          operator: currentOperator
+        };
+        if (dateFrom) params.dateFrom = dateFrom;
+        if (dateTo) params.dateTo = dateTo;
+
         const result = await api.export.summary(params);
+
+        if (result.success === false) {
+          setExportMessage({
+            type: 'warning',
+            text: result.message || '没有符合条件的数据'
+          });
+          return;
+        }
+
         setLastSummary(result.summary);
-        const baseUrl = window.location.origin;
         const link = document.createElement('a');
-        link.href = `${baseUrl}${result.filePath}`;
+        link.href = `${serverUrl}${result.filePath}`;
         link.download = result.filePath.split('/').pop() || 'energy_summary.csv';
         document.body.appendChild(link);
         link.click();
@@ -82,7 +115,41 @@ export function Export() {
 
         setExportMessage({
           type: 'success',
-          text: `导出成功，共 ${result.summary.totalCount} 条记录`
+          text: `导出成功，共 ${result.summary?.totalCount || 0} 条记录`
+        });
+      } else if (exportType === 'filtered') {
+        if (!isSupervisor) {
+          setExportMessage({
+            type: 'error',
+            text: '权限不足，只有主管可以导出筛选结果'
+          });
+          return;
+        }
+
+        const filters: any = {};
+        if (filterStatus) filters.status = filterStatus;
+        if (filterType) filters.type = filterType;
+
+        const result = await api.export.filtered(filters, currentOperator);
+
+        if (result.success === false) {
+          setExportMessage({
+            type: 'warning',
+            text: result.message || '没有符合条件的数据'
+          });
+          return;
+        }
+
+        const link = document.createElement('a');
+        link.href = `${serverUrl}${result.filePath}`;
+        link.download = result.filePath.split('/').pop() || 'filtered_anomalies.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        setExportMessage({
+          type: 'success',
+          text: `导出成功，共 ${result.count || 0} 条异常记录`
         });
       }
 
@@ -114,7 +181,7 @@ export function Export() {
               <label className="block text-sm font-medium text-slate-700 mb-3">
                 导出类型
               </label>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <button
                   onClick={() => setExportType('detail')}
                   className={`p-4 rounded-lg border-2 transition-all ${
@@ -154,6 +221,29 @@ export function Export() {
                   </p>
                   <p className="text-sm text-slate-500 mt-1">
                     导出按类型统计的汇总数据
+                  </p>
+                </button>
+
+                <button
+                  onClick={() => setExportType('filtered')}
+                  className={`p-4 rounded-lg border-2 transition-all ${
+                    exportType === 'filtered'
+                      ? 'border-purple-500 bg-purple-50'
+                      : 'border-slate-200 hover:border-slate-300'
+                  } ${!isSupervisor ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={!isSupervisor}
+                  title={!isSupervisor ? '仅主管可使用' : '导出筛选的异常记录'}
+                >
+                  <Filter className={`w-8 h-8 mx-auto mb-2 ${
+                    exportType === 'filtered' ? 'text-purple-600' : 'text-slate-400'
+                  }`} />
+                  <p className={`font-medium ${
+                    exportType === 'filtered' ? 'text-purple-700' : 'text-slate-700'
+                  }`}>
+                    筛选导出
+                  </p>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {isSupervisor ? '导出筛选的异常记录' : '（仅主管可用）'}
                   </p>
                 </button>
               </div>
@@ -201,6 +291,45 @@ export function Export() {
                   <option value="ELECTRICITY">电</option>
                   <option value="GAS">气</option>
                 </select>
+              </div>
+            )}
+
+            {exportType === 'filtered' && (
+              <div className="mb-6 space-y-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                <h3 className="font-medium text-purple-800">异常筛选条件</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                      异常状态
+                    </label>
+                    <select
+                      value={filterStatus}
+                      onChange={(e) => setFilterStatus(e.target.value)}
+                      className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    >
+                      <option value="">全部状态</option>
+                      <option value="PENDING">待复核</option>
+                      <option value="CORRECTED">已修正</option>
+                      <option value="IGNORED">已忽略</option>
+                      <option value="REVERTED">已撤销</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                      异常类型
+                    </label>
+                    <select
+                      value={filterType}
+                      onChange={(e) => setFilterType(e.target.value)}
+                      className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    >
+                      <option value="">全部类型</option>
+                      <option value="JUMP">跳变</option>
+                      <option value="MISSING">缺失</option>
+                      <option value="ROLLBACK">回退</option>
+                    </select>
+                  </div>
+                </div>
               </div>
             )}
 

@@ -265,6 +265,12 @@ app.post('/api/export/detail', async (req, res) => {
   try {
     const params = req.body;
     const operator = params.operator || 'system';
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      console.warn(`User ${operator} not found, using system defaults for export`);
+    }
+
     const result = await exportDetail(params, operator);
 
     if (result.recordCount === 0) {
@@ -276,7 +282,9 @@ app.post('/api/export/detail', async (req, res) => {
       });
     }
 
-    await createOperationLog(operator, 'EXPORT', 'detail', undefined, JSON.stringify(params));
+    if (user) {
+      await createOperationLog(operator, 'EXPORT', 'detail', undefined, JSON.stringify(params));
+    }
 
     res.json({
       filePath: result.filePath,
@@ -292,14 +300,33 @@ app.post('/api/export/summary', async (req, res) => {
   try {
     const params = req.body;
     const operator = params.operator || 'system';
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      console.warn(`User ${operator} not found, using system defaults for export`);
+    }
+
     const result = await exportSummary(params, operator);
 
-    await createOperationLog(operator, 'EXPORT', 'summary', undefined, JSON.stringify(params));
+    if (result.summary.totalCount === 0) {
+      return res.status(200).json({
+        success: false,
+        error: '没有符合条件的数据',
+        message: '当前筛选条件下没有可导出的汇总数据，请调整筛选条件后重试',
+        summary: result.summary,
+        recordCount: 0
+      });
+    }
+
+    if (user) {
+      await createOperationLog(operator, 'EXPORT', 'summary', undefined, JSON.stringify(params));
+    }
 
     res.json({
       filePath: result.filePath,
       record: result.record,
-      summary: result.summary
+      summary: result.summary,
+      recordCount: result.summary.totalCount
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

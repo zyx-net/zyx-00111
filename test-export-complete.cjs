@@ -171,6 +171,22 @@ async function runTests() {
     }
   });
 
+  await test('汇总导出0条数据（不存在的日期范围）', async () => {
+    const res = await apiRequest('POST', '/api/export/summary', {
+      dateFrom: '2025-01-01',
+      dateTo: '2025-01-31',
+      operator: 'supervisor'
+    });
+
+    if (res.status !== 200) throw new Error(`期望状态码200，实际${res.status}`);
+    if (res.data.success !== false) throw new Error(`期望success=false，实际${res.data.success}`);
+    if (res.data.error !== '没有符合条件的数据') throw new Error(`期望错误信息，实际${res.data.error}`);
+    if (res.data.recordCount !== 0) throw new Error(`期望recordCount=0，实际${res.data.recordCount}`);
+    if (res.data.filePath) throw new Error(`期望无文件路径，实际${res.data.filePath}`);
+
+    console.log(`   正确返回: ${res.data.message}`);
+  });
+
   // 3. 测试有数据导出
   console.log('\n--- 有数据导出测试 ---');
 

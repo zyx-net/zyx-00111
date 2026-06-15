@@ -1,8 +1,13 @@
 import { Batch, AnomalyWithReading, RuleConfig, ExportRecord, DashboardStats, ImportResult, MeterType, User, BatchComparisonResult, MeterTrajectory, AnomalyReplay, ConflictError, BatchRevertResult, OperationLog } from '../types';
 
 const API_BASE = '/api';
+const API_SERVER = 'http://localhost:3001';
 
-async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
+export function getApiServer(): string {
+  return API_SERVER;
+}
+
+export async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${url}`, {
     ...options,
     headers: {

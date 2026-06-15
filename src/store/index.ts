@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api } from '../utils/api';
+import { api, getApiServer } from '../utils/api';
 import { Batch, AnomalyWithReading, RuleConfig, DashboardStats, MeterType, User, BatchComparisonResult, AnomalyReplay, OperationLog } from '../types';
 
 interface AppState {
@@ -314,7 +314,8 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       set({ loading: true, error: null });
       const result = await api.export.batchCompare(batch1Id, batch2Id, get().currentOperator);
-      window.open(result.filePath.replace('./', '/api/'), '_blank');
+      const serverUrl = getApiServer();
+      window.open(`${serverUrl}${result.filePath}`, '_blank');
       set({ loading: false });
     } catch (error: any) {
       set({ error: error.message, loading: false });
@@ -326,7 +327,8 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       set({ loading: true, error: null });
       const result = await api.export.filtered(filters, get().currentOperator);
-      window.open(result.filePath.replace('./', '/api/'), '_blank');
+      const serverUrl = getApiServer();
+      window.open(`${serverUrl}${result.filePath}`, '_blank');
       set({ loading: false });
     } catch (error: any) {
       set({ error: error.message, loading: false });
@@ -338,7 +340,8 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       set({ loading: true, error: null });
       const result = await api.export.replay(anomalyId, get().currentOperator);
-      window.open(result.filePath.replace('./', '/api/'), '_blank');
+      const serverUrl = getApiServer();
+      window.open(`${serverUrl}${result.filePath}`, '_blank');
       set({ loading: false });
     } catch (error: any) {
       set({ error: error.message, loading: false });
