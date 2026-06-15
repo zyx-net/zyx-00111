@@ -146,7 +146,7 @@ export async function exportDetail(params: {
   if (data.length === 0) {
     return {
       filePath: '',
-      record: {} as ExportRecord,
+      record: null,
       recordCount: 0
     };
   }
@@ -228,7 +228,7 @@ export async function exportDetail(params: {
 export async function exportSummary(params: {
   dateFrom?: string;
   dateTo?: string;
-}, downloadedBy?: string): Promise<{ filePath: string; record: ExportRecord; summary: any }> {
+}, downloadedBy?: string): Promise<{ filePath: string; record: ExportRecord | null; summary: any; hasData: boolean }> {
   const db = getDatabase();
   const now = new Date().toISOString();
 
@@ -244,6 +244,8 @@ export async function exportSummary(params: {
     totalRawValue: 0,
     byType: [] as any[]
   };
+
+  let hasData = false;
 
   for (const type of meterTypes) {
     let query = `
@@ -281,6 +283,10 @@ export async function exportSummary(params: {
 
       summary.totalCount += count;
       summary.totalRawValue += totalRaw;
+
+      if (count > 0) {
+        hasData = true;
+      }
 
       let anomalyQuery = `
         SELECT COUNT(*) as anomaly_count
@@ -322,6 +328,15 @@ export async function exportSummary(params: {
   const pendingResults = db.exec(pendingAnomalyQuery);
   summary.pendingAnomalyCount = pendingResults[0]?.values[0]?.[0] || 0;
 
+  if (!hasData) {
+    return {
+      filePath: '',
+      record: null,
+      summary,
+      hasData: false
+    };
+  }
+
   const csvContent = toCSV([summary, ...summary.byType]);
   const fileName = `energy_summary_${Date.now()}.csv`;
   const filePath = await saveCSVFile(fileName, csvContent);
@@ -341,7 +356,7 @@ export async function exportSummary(params: {
     downloadedBy: downloadedBy || 'system'
   };
 
-  return { filePath, record, summary };
+  return { filePath, record, summary, hasData: true };
 }
 
 export async function getExportRecords(): Promise<ExportRecord[]> {

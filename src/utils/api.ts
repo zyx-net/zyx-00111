@@ -37,6 +37,27 @@ async function fetchApiWithStatus<T>(url: string, options?: RequestInit): Promis
   return { data, status: response.status };
 }
 
+export interface ExportResult {
+  filePath: string;
+  record: ExportRecord;
+  recordCount?: number;
+  success?: boolean;
+  error?: string;
+  message?: string;
+  createdAt?: string;
+  exportedBy?: string;
+}
+
+export interface ExportSummaryResult extends ExportResult {
+  summary: any;
+  generatedAt?: string;
+}
+
+export interface ExportFilteredResult extends ExportResult {
+  count: number;
+  filters?: any;
+}
+
 export const api = {
   batches: {
     import: (readings: Array<{
@@ -152,13 +173,13 @@ export const api = {
 
   export: {
     detail: (params: { dateFrom?: string; dateTo?: string; meterType?: string; batchId?: string; operator?: string }) =>
-      fetchApi<{ filePath: string; record: ExportRecord; recordCount?: number; success?: boolean; error?: string; message?: string }>('/export/detail', {
+      fetchApi<ExportResult>('/export/detail', {
         method: 'POST',
         body: JSON.stringify(params),
       }),
 
     summary: (params: { dateFrom?: string; dateTo?: string; operator?: string }) =>
-      fetchApi<{ filePath: string; record: ExportRecord; summary: any }>('/export/summary', {
+      fetchApi<ExportSummaryResult>('/export/summary', {
         method: 'POST',
         body: JSON.stringify(params),
       }),
@@ -176,7 +197,7 @@ export const api = {
       }),
 
     filtered: (filters: { status?: string; type?: string }, operator: string) =>
-      fetchApi<{ filePath: string; record: ExportRecord; count: number }>('/export/filtered', {
+      fetchApi<ExportFilteredResult>('/export/filtered', {
         method: 'POST',
         body: JSON.stringify({ filters, operator }),
       }),

@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { api, getApiServer } from '../utils/api';
 import { useStore } from '../store';
-import { FileDown, FileText, BarChart3, Download, Calendar, Filter } from 'lucide-react';
+import { FileDown, FileText, BarChart3, Download, Calendar, Filter, Activity } from 'lucide-react';
+import { OperationLog } from '../types';
 
 export function Export() {
   const currentOperator = useStore(state => state.currentOperator);
@@ -31,6 +32,9 @@ export function Export() {
   const [exportHistory, setExportHistory] = useState<any[]>([]);
   const [lastSummary, setLastSummary] = useState<any>(null);
   const [exportMessage, setExportMessage] = useState<{type: 'success' | 'warning' | 'error', text: string} | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [operationLogs, setOperationLogs] = useState<OperationLog[]>([]);
+  const [logFilter, setLogFilter] = useState<'all' | 'mine'>('all');
   const isSupervisor = currentUser?.role === 'ADMIN' || currentUser?.role === 'SUPERVISOR';
 
   useEffect(() => {
@@ -53,6 +57,37 @@ export function Export() {
     localStorage.setItem('export_filterType', filterType);
   }, [filterType]);
 
+  useEffect(() => {
+    const loadExportHistory = async () => {
+      try {
+        const records = await api.export.list();
+        setExportHistory(records);
+      } catch (err) {
+        console.error('Failed to load export history:', err);
+      }
+    };
+    loadExportHistory();
+  }, []);
+
+  useEffect(() => {
+    if (showLogs) {
+      const loadLogs = async () => {
+        try {
+          const filters = logFilter === 'mine' ? { operator: currentOperator } : undefined;
+          const logs = await api.logs.list(filters);
+          const exportLogs = logs.filter(log => 
+            log.operationType === 'EXPORT' || 
+            log.operationType === 'BATCH_EXPORT'
+          );
+          setOperationLogs(exportLogs);
+        } catch (err) {
+          console.error('Failed to load operation logs:', err);
+        }
+      };
+      loadLogs();
+    }
+  }, [showLogs, logFilter, currentOperator]);
+
   const handleExport = async () => {
     setLoading(true);
     setExportMessage(null);
@@ -74,19 +109,21 @@ export function Export() {
             type: 'warning',
             text: result.message || '没有符合条件的数据'
           });
+          setLoading(false);
           return;
         }
 
+        const fileName = result.filePath.split('/').pop() || 'energy_detail.csv';
         const link = document.createElement('a');
         link.href = `${serverUrl}${result.filePath}`;
-        link.download = result.filePath.split('/').pop() || 'energy_detail.csv';
+        link.download = fileName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
 
         setExportMessage({
           type: 'success',
-          text: `导出成功，共 ${result.recordCount} 条记录`
+          text: `导出成功，共 ${result.recordCount || 0} 条记录，文件名: ${fileName}`
         });
       } else if (exportType === 'summary') {
         const params: any = {
@@ -102,20 +139,22 @@ export function Export() {
             type: 'warning',
             text: result.message || '没有符合条件的数据'
           });
+          setLoading(false);
           return;
         }
 
         setLastSummary(result.summary);
+        const fileName = result.filePath.split('/').pop() || 'energy_summary.csv';
         const link = document.createElement('a');
         link.href = `${serverUrl}${result.filePath}`;
-        link.download = result.filePath.split('/').pop() || 'energy_summary.csv';
+        link.download = fileName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
 
         setExportMessage({
           type: 'success',
-          text: `导出成功，共 ${result.summary?.totalCount || 0} 条记录`
+          text: `导出成功，共 ${result.summary?.totalCount || 0} 条记录，文件名: ${fileName}`
         });
       } else if (exportType === 'filtered') {
         if (!isSupervisor) {
@@ -123,6 +162,7 @@ export function Export() {
             type: 'error',
             text: '权限不足，只有主管可以导出筛选结果'
           });
+          setLoading(false);
           return;
         }
 
@@ -137,19 +177,21 @@ export function Export() {
             type: 'warning',
             text: result.message || '没有符合条件的数据'
           });
+          setLoading(false);
           return;
         }
 
+        const fileName = result.filePath.split('/').pop() || 'filtered_anomalies.csv';
         const link = document.createElement('a');
         link.href = `${serverUrl}${result.filePath}`;
-        link.download = result.filePath.split('/').pop() || 'filtered_anomalies.csv';
+        link.download = fileName;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
 
         setExportMessage({
           type: 'success',
-          text: `导出成功，共 ${result.count || 0} 条异常记录`
+          text: `导出成功，共 ${result.count || 0} 条异常记录，文件名: ${fileName}`
         });
       }
 
@@ -396,27 +438,47 @@ export function Export() {
 
             <div className="space-y-3">
               {exportHistory.length > 0 ? (
-                exportHistory.slice(0, 10).map((record) => (
-                  <div key={record.id} className="p-3 bg-slate-50 rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <span className={`px-2 py-0.5 text-xs rounded ${
-                        record.exportType === 'DETAIL'
-                          ? 'bg-blue-100 text-blue-700'
-                          : 'bg-green-100 text-green-700'
-                      }`}>
-                        {record.exportType === 'DETAIL' ? '明细' : '汇总'}
-                      </span>
-                      <span className="text-xs text-slate-400">
-                        {new Date(record.downloadedAt).toLocaleDateString()}
-                      </span>
+                exportHistory.slice(0, 20).map((record) => {
+                  const params = record.params ? JSON.parse(record.params) : {};
+                  const exportTypeLabel = {
+                    'DETAIL': '明细',
+                    'SUMMARY': '汇总',
+                    'BATCH_COMPARE': '批次对比',
+                    'REPLAY': '回放',
+                    'FILTERED': '筛选'
+                  }[record.exportType] || record.exportType;
+                  
+                  return (
+                    <div key={record.id} className="p-3 bg-slate-50 rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <span className={`px-2 py-0.5 text-xs rounded ${
+                          record.exportType === 'DETAIL'
+                            ? 'bg-blue-100 text-blue-700'
+                            : record.exportType === 'SUMMARY'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-purple-100 text-purple-700'
+                        }`}>
+                          {exportTypeLabel}
+                        </span>
+                        <span className="text-xs text-slate-400">
+                          {new Date(record.downloadedAt).toLocaleDateString()} {new Date(record.downloadedAt).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {params.dateFrom || params.dateTo ? (
+                          <span>
+                            {params.dateFrom || '...'} 至 {params.dateTo || '...'}
+                          </span>
+                        ) : (
+                          <span>全部时间</span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        操作人: {record.downloadedBy || 'system'}
+                      </div>
                     </div>
-                    {record.params && (
-                      <p className="text-xs text-slate-500 mt-1 truncate">
-                        {JSON.parse(record.params).dateFrom || '全部时间'}
-                      </p>
-                    )}
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div className="text-center py-8 text-slate-400">
                   暂无导出记录
@@ -434,6 +496,83 @@ export function Export() {
               <li>• 导出文件格式为CSV (.csv)</li>
             </ul>
           </div>
+
+          <button
+            onClick={() => setShowLogs(!showLogs)}
+            className="mt-4 w-full flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          >
+            <Activity className="w-5 h-5" />
+            {showLogs ? '隐藏操作日志' : '查看导出操作日志'}
+          </button>
+
+          {showLogs && (
+            <div className="mt-4 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-slate-800">导出操作日志</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setLogFilter('all')}
+                    className={`px-3 py-1 text-sm rounded ${
+                      logFilter === 'all'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    全部日志
+                  </button>
+                  <button
+                    onClick={() => setLogFilter('mine')}
+                    className={`px-3 py-1 text-sm rounded ${
+                      logFilter === 'mine'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    我的日志
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {operationLogs.length > 0 ? (
+                  operationLogs.slice(0, 50).map((log) => (
+                    <div key={log.id} className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">
+                            {log.operationType}
+                          </span>
+                          <span className="text-sm font-medium text-slate-700">
+                            {log.targetType}
+                          </span>
+                        </div>
+                        <span className="text-xs text-slate-400">
+                          {new Date(log.operatedAt).toLocaleDateString()} {new Date(log.operatedAt).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        <span className="font-medium">操作人:</span> {log.operator}
+                        {log.details && (
+                          <>
+                            {' | '}
+                            <span className="font-medium">详情:</span> {JSON.parse(log.details).dateFrom || JSON.parse(log.details).filters?.status || '全部'}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-center py-8 text-slate-400">
+                    暂无导出日志
+                  </div>
+                )}
+              </div>
+              {!isSupervisor && (
+                <div className="mt-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200 text-sm text-yellow-700">
+                  注意：您当前以"复核员"身份登录，只能查看自己的导出日志。主管可以查看所有用户的日志。
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

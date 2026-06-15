@@ -273,12 +273,13 @@ app.post('/api/export/detail', async (req, res) => {
 
     const result = await exportDetail(params, operator);
 
-    if (result.recordCount === 0) {
+    if (result.recordCount === 0 || !result.filePath) {
       return res.status(200).json({
         success: false,
         error: '没有符合条件的数据',
         message: '当前筛选条件下没有可导出的数据，请调整筛选条件后重试',
-        recordCount: 0
+        recordCount: 0,
+        filePath: ''
       });
     }
 
@@ -289,7 +290,8 @@ app.post('/api/export/detail', async (req, res) => {
     res.json({
       filePath: result.filePath,
       record: result.record,
-      recordCount: result.recordCount
+      recordCount: result.recordCount,
+      success: true
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -308,13 +310,14 @@ app.post('/api/export/summary', async (req, res) => {
 
     const result = await exportSummary(params, operator);
 
-    if (result.summary.totalCount === 0) {
+    if (!result.hasData || !result.filePath) {
       return res.status(200).json({
         success: false,
         error: '没有符合条件的数据',
         message: '当前筛选条件下没有可导出的汇总数据，请调整筛选条件后重试',
         summary: result.summary,
-        recordCount: 0
+        recordCount: 0,
+        filePath: ''
       });
     }
 
@@ -326,7 +329,8 @@ app.post('/api/export/summary', async (req, res) => {
       filePath: result.filePath,
       record: result.record,
       summary: result.summary,
-      recordCount: result.summary.totalCount
+      recordCount: result.summary.totalCount,
+      success: true
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -627,18 +631,31 @@ app.post('/api/export/filtered', async (req, res) => {
         success: false,
         error: '没有符合条件的数据',
         message: '当前筛选条件下没有可导出的异常记录，请调整筛选条件后重试',
-        recordCount: 0
+        recordCount: 0,
+        filePath: ''
       });
     }
 
     const exportResult = await exportDetail({ ...filters, exportType: 'FILTERED' }, operator);
+
+    if (!exportResult.filePath || exportResult.recordCount === 0) {
+      return res.status(200).json({
+        success: false,
+        error: '没有符合条件的数据',
+        message: '当前筛选条件下没有可导出的异常记录，请调整筛选条件后重试',
+        recordCount: 0,
+        filePath: ''
+      });
+    }
 
     await createOperationLog(operator, 'EXPORT', 'filtered_anomalies', undefined, JSON.stringify(filters));
 
     res.json({
       filePath: exportResult.filePath,
       record: exportResult.record,
-      recordCount: anomalies.length
+      recordCount: anomalies.length,
+      count: anomalies.length,
+      success: true
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
