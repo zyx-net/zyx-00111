@@ -9,8 +9,10 @@
 - **复核修正**：支持修正、忽略、撤销操作，保留完整历史记录
 - **规则配置**：阈值配置支持版本管理，可回滚到历史版本
 - **数据导出**：支持明细导出和汇总报表导出（CSV格式）
+- **离线交付包**：筛选记录打包成带清单的交付包，异步生成可下载文件
 - **冲突检测**：多用户并发操作时版本冲突检测
 - **数据持久化**：SQLite本地存储，系统重启后数据一致
+- **完整审计**：所有操作留痕，支持权限隔离和越权访问检测
 
 ## 技术栈
 
@@ -62,6 +64,15 @@ node test-filter-export.cjs
 
 # 导出功能完整性测试（0条处理、操作日志、权限隔离）
 node test-export-complete.cjs
+
+# 离线交付包回归测试
+node test-delivery-package.cjs
+
+# 生成离线交付包示例数据
+node generate-delivery-sample.cjs
+
+# 离线交付包可复现验证
+node verify-delivery-package.cjs
 ```
 
 ## 项目结构
@@ -75,17 +86,96 @@ node test-export-complete.cjs
 │   ├── correctionService.ts # 修正服务
 │   ├── ruleService.ts     # 规则配置服务
 │   ├── exportService.ts   # 导出服务
+│   ├── deliveryPackageService.ts # 离线交付包服务
 │   ├── types.ts           # 类型定义
 │   └── sql.js.d.ts        # sql.js类型声明
 ├── src/                   # 前端代码
 │   ├── components/        # UI组件
 │   ├── pages/             # 页面组件
+│   │   ├── Delivery.tsx   # 离线交付包页面
+│   │   └── ...
 │   ├── store/             # Zustand状态管理
 │   ├── types/             # 类型定义
 │   └── utils/             # 工具函数
 ├── data/                  # SQLite数据库文件（自动创建）
-└── exports/               # 导出文件目录（自动创建）
+└── exports/               # 导出文件和交付包目录（自动创建）
 ```
+
+## 离线交付包功能说明
+
+### 功能概述
+
+离线交付包模块允许业务人员筛选记录，打包成带清单的交付包，提交后异步生成可下载文件，并在页面里直接看到状态、失败原因和操作日志。
+
+### 核心功能
+
+1. **交付包管理**
+   - 创建、查看、删除交付包
+   - 筛选条件支持日期范围、能源类型、异常状态等
+   - 交付包状态跟踪：待处理、生成中、已完成、失败、已取消
+
+2. **文件生成**
+   - 异步生成CSV格式的交付包文件
+   - 包含交付清单和记录明细
+   - 版本管理，历史记录完整保留
+
+3. **下载管理**
+   - 下载记录完整保留
+   - 支持版本回溯下载
+
+4. **权限和审计**
+   - 不同角色只能看到自己有权访问的交付包
+   - 下载记录按角色过滤
+   - 审计明细记录所有操作
+   - 越权访问明确拒绝并留痕
+
+5. **服务重启恢复**
+   - 任务状态自动恢复
+   - 文件下载地址持久化
+   - 配置信息完整保留
+
+6. **并发控制**
+   - 文件版本递增，不会覆盖
+   - 锁定规则防止并发修改
+   - 历史记录完整可查
+
+### 权限说明
+
+| 角色 | 创建包 | 查看包 | 修改包 | 删除包 | 查看审计 | 下载 |
+|------|--------|--------|--------|--------|----------|------|
+| 管理员 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 主管 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 复核员 | ✓ | 仅自己的 | 仅自己的 | ✗ | ✗ | ✓ |
+
+### 数据库表结构
+
+- `delivery_packages` - 交付包主表
+- `delivery_package_records` - 交付包记录关联表
+- `delivery_package_tasks` - 任务执行记录表
+- `delivery_package_downloads` - 下载记录表
+- `delivery_package_audit_logs` - 审计日志表
+- `delivery_package_versions` - 版本历史表
+
+### API接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /api/delivery-packages | 创建交付包 |
+| GET | /api/delivery-packages | 查询交付包列表 |
+| GET | /api/delivery-packages/:id | 查询交付包详情 |
+| POST | /api/delivery-packages/:id/records | 添加记录到交付包 |
+| GET | /api/delivery-packages/:id/records | 查询交付包记录 |
+| POST | /api/delivery-packages/:id/generate | 生成交付包文件 |
+| GET | /api/delivery-packages/:id/download | 下载交付包 |
+| POST | /api/delivery-packages/:id/cancel | 取消交付包 |
+| POST | /api/delivery-packages/:id/rebuild | 重建交付包 |
+| POST | /api/delivery-packages/:id/lock | 锁定交付包 |
+| POST | /api/delivery-packages/:id/unlock | 解锁交付包 |
+| GET | /api/delivery-packages/:id/tasks | 查询任务日志 |
+| GET | /api/delivery-packages/:id/versions | 查询版本历史 |
+| GET | /api/delivery-packages/:id/downloads | 查询下载记录 |
+| GET | /api/delivery-packages/audit-logs | 查询审计日志 |
+| GET | /api/delivery-packages/downloads | 查询下载记录（全局） |
 
 ## 验证指南
 
@@ -149,6 +239,49 @@ node test-missing-detection.cjs
    - 已撤销的异常：使用 rawValue 计算
    - totalEffective 字段反映实际有效值
 
+### 离线交付包验证
+
+#### 创建和生成交付包
+
+1. 进入"离线交付包"页面
+2. 点击"新建交付包"
+3. 输入名称和描述，设置筛选条件
+4. 点击创建
+5. 在交付包详情中添加记录
+6. 点击"生成文件"按钮
+7. 验证：状态变为"已完成"，可下载文件
+
+**测试步骤**：
+```bash
+node test-delivery-package.cjs
+```
+
+#### 权限隔离验证
+
+1. 以"复核员"身份登录
+2. 创建自己的交付包
+3. 尝试查看其他人的交付包
+4. **验证点**：
+   - 无法看到其他人创建的交付包
+   - 下载记录只显示自己的记录
+   - 审计日志无法访问
+
+**测试步骤**：
+```bash
+node verify-delivery-package.cjs
+```
+
+#### 重启恢复验证
+
+1. 创建并生成若干交付包
+2. 停止服务器（Ctrl+C）
+3. 重新启动服务器
+4. 验证：
+   - 交付包列表完整保留
+   - 已完成的交付包文件路径有效
+   - 下载记录完整保留
+   - 审计日志完整保留
+
 ### 失败路径验证
 
 #### 1. 重复导入检测
@@ -208,6 +341,7 @@ node test-missing-detection.cjs
    - 已忽略的异常状态保持
    - 已撤销的异常 correctedValue 为 null
    - 导出记录历史完整
+   - 交付包状态和文件路径完整保留
    - 汇总报表数据与界面显示一致
 
 ## API接口
@@ -252,6 +386,26 @@ node test-missing-detection.cjs
 | POST | /api/export/filtered | 导出筛选结果（CSV，仅主管） |
 | GET | /api/exports | 获取导出记录 |
 
+### 离线交付包
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /api/delivery-packages | 创建交付包 |
+| GET | /api/delivery-packages | 获取交付包列表 |
+| GET | /api/delivery-packages/:id | 获取交付包详情 |
+| POST | /api/delivery-packages/:id/records | 添加记录 |
+| GET | /api/delivery-packages/:id/records | 获取记录列表 |
+| POST | /api/delivery-packages/:id/generate | 生成文件 |
+| GET | /api/delivery-packages/:id/download | 下载文件 |
+| POST | /api/delivery-packages/:id/cancel | 取消交付包 |
+| POST | /api/delivery-packages/:id/rebuild | 重建交付包 |
+| POST | /api/delivery-packages/:id/lock | 锁定交付包 |
+| POST | /api/delivery-packages/:id/unlock | 解锁交付包 |
+| GET | /api/delivery-packages/:id/tasks | 获取任务日志 |
+| GET | /api/delivery-packages/:id/versions | 获取版本历史 |
+| GET | /api/delivery-packages/:id/downloads | 获取下载记录 |
+| GET | /api/delivery-packages/audit-logs | 获取审计日志 |
+
 ## 样例数据
 
 ### 回退异常样例
@@ -284,13 +438,22 @@ node test-missing-detection.cjs
 3. **汇总报表正确计算**：汇总时只计算状态为 CORRECTED 的 correctedValue，其他情况使用 rawValue
 4. **构建类型错误**：修复 sql.js 类型声明和 TypeScript 严格模式问题
 
+### 离线交付包新增功能
+
+1. **交付包模块完整实现**：创建、生成、下载全流程打通
+2. **权限和审计系统**：角色隔离、越权拒绝、操作留痕
+3. **服务重启恢复**：任务状态、下载地址、配置信息持久化
+4. **并发控制**：版本管理、锁定规则、历史记录
+5. **完整测试覆盖**：回归测试、可复现验证脚本
+
 ### 关键代码变更
 
-- [api/anomalyService.ts](api/anomalyService.ts)：重写缺失检测逻辑，基于批次内读数间隔检测
-- [api/exportService.ts](api/exportService.ts)：修改汇总SQL，使用 CASE WHEN 判断异常状态
-- [api/server.ts](api/server.ts)：传递 readings 参数给 createMissingAnomalies
-- [api/sql.js.d.ts](api/sql.js.d.ts)：新增 sql.js 类型声明文件
-- [tsconfig.api.json](tsconfig.api.json)：关闭 noImplicitAny 修复构建错误
+- [api/database.ts](api/database.ts)：新增交付包相关表结构和迁移逻辑
+- [api/deliveryPackageService.ts](api/deliveryPackageService.ts)：新增交付包业务逻辑
+- [api/server.ts](api/server.ts)：新增交付包API路由
+- [src/pages/Delivery.tsx](src/pages/Delivery.tsx)：新增交付包前端页面
+- [src/utils/api.ts](src/utils/api.ts)：新增交付包API调用
+- [src/components/Layout.tsx](src/components/Layout.tsx)：新增交付包导航入口
 
 ## 注意事项
 
@@ -298,15 +461,42 @@ node test-missing-detection.cjs
 2. **导出文件**：导出的CSV文件保存在`exports/`目录，使用UTF-8编码
 3. **并发操作**：系统使用版本号进行乐观锁，请避免同时修改同一记录
 4. **规则生效**：规则修改仅影响后续导入的数据，不影响历史数据
+5. **交付包文件**：交付包文件保存在`exports/`目录，建议定期清理
 
-## CSV导出验收指南
+## 离线交付包验收指南
 
 ### 验收标准
 
-1. **文件格式**：所有导出文件必须是 `.csv` 格式，不是 `.xlsx`
-2. **编码**：文件使用 UTF-8 编码，中文字符能正确显示
-3. **字段**：CSV包含正确的表头和字段顺序
-4. **响应**：API返回JSON包含`filePath`字段
+1. **创建和生成**
+   - ✓ 可以创建交付包，设置名称和筛选条件
+   - ✓ 可以添加记录到交付包
+   - ✓ 可以生成交付包文件（CSV格式）
+   - ✓ 文件包含清单和记录明细
+
+2. **下载和记录**
+   - ✓ 可以下载生成的交付包
+   - ✓ 下载记录完整保留
+   - ✓ 版本历史清晰可查
+
+3. **权限隔离**
+   - ✓ 不同角色只能看到自己有权访问的交付包
+   - ✓ 下载记录按角色过滤
+   - ✓ 越权访问明确拒绝
+
+4. **审计追踪**
+   - ✓ 所有操作记录到审计日志
+   - ✓ 主管可查看所有审计日志
+   - ✓ 复核员无法访问审计日志
+
+5. **重启恢复**
+   - ✓ 交付包状态在重启后保持一致
+   - ✓ 文件下载地址持久化
+   - ✓ 配置信息完整保留
+
+6. **并发控制**
+   - ✓ 文件版本递增，不会覆盖
+   - ✓ 锁定规则防止并发修改
+   - ✓ 取消后可以重建
 
 ### 验收步骤
 
@@ -316,522 +506,34 @@ npm run dev
 ```
 **预期**：前端运行在 http://localhost:5173，后端运行在 http://localhost:3001
 
-#### 2. CSV导出格式验证
+#### 2. 离线交付包回归测试
 ```bash
-node test-csv-export.cjs
+node test-delivery-package.cjs
 ```
-**预期**：20项测试全部通过
+**预期**：所有测试通过
 
-#### 3. 关键验证点
-- [ ] 导出文件扩展名是 `.csv` 不是 `.xlsx`
-- [ ] 文件可以用Excel或文本编辑器打开
-- [ ] 中文内容显示正常（不是乱码）
-- [ ] CSV有正确的表头行
-- [ ] 数据行与筛选条件一致
-
-#### 4. 完整回归测试
+#### 3. 离线交付包可复现验证
 ```bash
-node test-review-flow.cjs
+node verify-delivery-package.cjs
 ```
-**预期**：31项测试全部通过
+**预期**：完整链路验证通过
+
+#### 4. 生成示例数据
+```bash
+node generate-delivery-sample.cjs
+```
+**预期**：创建测试数据和示例交付包
 
 ### 常见问题排查
 
 | 问题 | 可能原因 | 解决方案 |
 |------|---------|---------|
-| `npm run dev` 报模块不存在 | tsx模块路径问题 | 使用 `npx tsx` 替代直接调用 |
-| 导出是Excel不是CSV | exportService.ts 使用了 xlsx 库 | 已修改为生成CSV格式 |
-| 文件名乱码 | 未使用UTF-8 BOM | 已添加 `\ufeff` BOM头 |
-| 字段顺序不对 | 导出逻辑问题 | 已修复字段映射 |
-
-## 导出中心功能完善说明
-
-### 本次完善内容
-
-本次更新重点完善了导出中心的下载链路和审计边界，确保：
-
-1. **下载链路打通**
-   - 前端获取的下载地址可以直接下载
-   - 响应头包含正确的 `Content-Disposition` 和 `Content-Type`
-   - 默认文件名、响应头、落盘内容和页面提示一致
-
-2. **审计边界完善**
-   - 导出成功后完整记录审计信息到数据库
-   - 导出记录包含：ID、类型、参数、操作时间、操作者、文件名、记录数
-   - 操作日志完整记录导出操作
-
-3. **历史记录优化**
-   - 首屏自动加载历史导出记录
-   - 主管可查看全部记录，复核员只能查看自己的记录
-   - 支持按操作人和导出类型筛选
-
-4. **空结果处理**
-   - 筛选结果为0时前后端都明确提示
-   - 不生成空CSV文件
-   - 历史记录列表不增加无效记录
-
-5. **服务重启持久化**
-   - 导出配置、历史记录、下载地址全部持久化到数据库
-   - 数据库表新增 `file_name` 和 `record_count` 字段
-   - 支持数据库迁移，自动添加新字段
-
-6. **权限隔离**
-   - 不同角色只能看到自己的导出日志和审计记录
-   - 主管可切换查看"我的记录"和"全部记录"
-   - 复核员切换查询时不会串数据
-
-### 数据库变更
-
-导出记录表新增字段：
-```sql
-ALTER TABLE export_records ADD COLUMN file_name TEXT;
-ALTER TABLE export_records ADD COLUMN record_count INTEGER DEFAULT 0;
-```
-
-### API 变更
-
-1. **新增下载路由**
-   - `GET /api/download/:fileName` - 支持正确的响应头下载
-
-2. **导出记录查询支持过滤**
-   - `GET /api/exports?operator=xxx&exportType=xxx`
-
-### 测试覆盖
-
-导出功能完整性测试 (`test-export-complete.cjs`) 覆盖：
-- 0条数据导出处理（不生成空文件）
-- 有数据导出（文件格式、编码、内容验证）
-- 操作日志记录（包含操作者信息）
-- 角色日志隔离（不同角色日志不混淆）
-- 导出记录持久化（生成导出记录）
-- CSV格式验证（UTF-8编码、BOM头、字段完整性）
-- 权限隔离测试
-- 持久化验证
-
-### 运行测试
-
-```bash
-# 导出功能完整性测试
-node test-export-complete.cjs
-```
-
-### 前端使用说明
-
-1. **导出记录列表**
-   - 页面加载时自动获取历史导出记录
-   - 主管可以切换"我的记录"和"全部记录"
-   - 每条记录显示：类型、操作时间、操作人、记录数
-   - 支持"重新下载"功能
-
-2. **空结果提示**
-   - 当筛选条件无数据时，显示警告提示
-   - 提示信息："当前筛选条件下没有可导出的数据，请调整筛选条件后重试"
-   - 不触发下载，不增加历史记录
-
-3. **审计日志**
-   - 导出操作自动记录到审计日志
-   - 日志包含：操作人、操作类型、操作时间、筛选条件
-   - 主管可查看所有用户的导出日志
-   - 复核员只能查看自己的导出日志
+| 交付包状态一直是"待处理" | 服务未正常响应 | 检查服务器日志 |
+| 生成文件失败 | 没有添加记录 | 先添加记录再生成 |
+| 无法下载文件 | 文件路径无效 | 检查exports目录 |
+| 权限错误 | 角色配置错误 | 检查数据库users表 |
+| 重启后状态丢失 | 数据库未保存 | 检查database.ts saveDatabase调用 |
 
 ## License
 
 MIT
-
-## 导出中心功能验收指南
-
-### 功能概述
-
-导出中心是系统的核心功能模块，提供以下能力：
-
-- **多种导出类型**：支持数据明细、汇总报表、筛选导出三种模式
-- **权限控制**：不同角色有不同的导出权限
-- **审计追踪**：完整记录所有导出操作，便于审计追溯
-- **数据持久化**：导出记录、历史配置在重启后保持有效
-- **智能反馈**：空结果筛选时不生成空文件，提示明确
-
-### 角色权限说明
-
-| 角色 | 角色标识 | 明细导出 | 汇总导出 | 筛选导出 | 查看所有日志 |
-|------|---------|---------|---------|---------|------------|
-| 管理员 | ADMIN | ✓ | ✓ | ✓ | ✓ |
-| 主管 | SUPERVISOR | ✓ | ✓ | ✓ | ✓ |
-| 复核员 | REVIEWER | ✓ | ✓ | ✗ | 仅查看自己的日志 |
-
-### 启动与验证流程
-
-#### 1. 开发环境启动
-
-```bash
-# 安装依赖（首次）
-npm install
-
-# 启动开发服务器
-npm run dev
-```
-
-**验证点**：
-- 前端运行在 http://localhost:5173
-- 后端API运行在 http://localhost:3001
-- 无端口冲突错误
-
-#### 2. 生产构建验证
-
-```bash
-# 前端构建
-npm run build
-```
-
-**预期结果**：
-- 构建成功，生成 `dist/` 目录
-- 无 TypeScript 编译错误
-- CSS 和 JS 文件大小合理
-
-**验证命令**：
-```bash
-# 检查构建产物
-ls -lh dist/assets/
-
-# 检查 dist 目录结构
-find dist -type f
-```
-
-#### 3. 导入测试数据
-
-```bash
-# 使用测试脚本生成样例数据
-node generate-sample.cjs
-```
-
-**验证点**：
-- 数据库中应有批次记录
-- 异常检测应自动运行
-- 仪表盘统计应更新
-
-### 导出功能回归测试
-
-#### 测试脚本说明
-
-```bash
-# 导出功能完整性测试（推荐优先运行）
-node test-export-complete.cjs
-```
-
-**测试覆盖**：
-1. ✓ 0条数据导出处理（不生成空文件）
-2. ✓ 有数据导出（文件格式、编码、内容验证）
-3. ✓ 操作日志记录（包含操作者信息）
-4. ✓ 角色日志隔离（不同角色日志不混淆）
-5. ✓ 导出记录持久化（生成导出记录）
-6. ✓ CSV格式验证（UTF-8编码、BOM头、字段完整性）
-
-**预期输出**：
-```
-=== 导出功能完整性测试 ===
-
---- 导入测试数据 ---
-  ✓ 导入测试数据
-
---- 0条数据导出测试 ---
-  ✓ 明细导出0条数据（不存在的日期范围）
-  ✓ 筛选导出0条数据（待复核状态）
-  ✓ 汇总导出0条数据（不存在的日期范围）
-
---- 有数据导出测试 ---
-  ✓ 明细导出（有数据）
-  ✓ 汇总导出
-
---- 操作日志测试 ---
-  ✓ 导出操作记录到日志
-  ✓ 导出记录包含操作者信息
-  ✓ 不同角色日志隔离
-
---- 导出记录测试 ---
-  ✓ 导出后生成导出记录
-  ✓ 导出记录包含操作者
-
---- CSV格式验证 ---
-  ✓ CSV文件使用UTF-8编码
-  ✓ 默认文件名正确（.csv）
-
-========================================
-测试完成: 12 通过, 0 失败
-========================================
-```
-
-#### 完整回归测试
-
-```bash
-# 完整业务流程测试
-node test-review-flow.cjs
-```
-
-**测试场景**：
-- 数据导入流程
-- 异常检测和复核
-- 修正、忽略、撤销操作
-- 规则配置和版本回滚
-- 导出功能
-- 并发冲突检测
-
-### 页面级功能验证
-
-#### 导出中心 - 首屏加载验证
-
-**操作步骤**：
-1. 访问导出中心页面
-2. 不进行任何操作，直接查看导出记录列表
-
-**预期结果**：
-- ✓ 页面加载时自动获取历史导出记录
-- ✓ 列表显示最近的20条记录
-- ✓ 每条记录显示：导出类型、操作时间、操作人、筛选条件
-
-**验证命令**：
-```bash
-# API直接验证
-curl http://localhost:3001/api/exports
-```
-
-**预期响应**：
-```json
-[
-  {
-    "id": "xxx",
-    "exportType": "DETAIL",
-    "params": "{\"dateFrom\":\"2026-06-01\"}",
-    "downloadedAt": "2026-06-16T10:30:00.000Z",
-    "downloadedBy": "supervisor"
-  }
-]
-```
-
-#### 导出成功 - 状态一致性验证
-
-**操作步骤**：
-1. 选择"数据明细"导出类型
-2. 设置日期范围（如 2026-06-01 至 2026-06-30）
-3. 点击"导出CSV"按钮
-
-**预期结果**：
-- ✓ 按钮状态：导出过程中显示"导出中..."，完成后恢复
-- ✓ 页面提示：显示"导出成功，共 X 条记录，文件名: energy_detail_xxx.csv"
-- ✓ 下载文件：浏览器自动下载CSV文件
-- ✓ 文件名格式：`energy_detail_<timestamp>.csv`
-- ✓ 文件编码：UTF-8 with BOM（可用文本编辑器验证）
-- ✓ 导出记录：历史记录列表新增该条记录
-
-**验证点检查清单**：
-- [ ] 按钮loading状态正确
-- [ ] 成功提示包含记录数和文件名
-- [ ] 文件下载到本地
-- [ ] CSV文件可用Excel/文本编辑器打开
-- [ ] 中文内容无乱码
-- [ ] 历史记录列表更新
-
-#### 空结果筛选 - 反馈机制验证
-
-**操作步骤**：
-1. 选择"数据明细"导出类型
-2. 设置不存在的日期范围（如 2025-01-01 至 2025-01-31）
-3. 点击"导出CSV"按钮
-
-**预期结果**：
-- ✓ 页面显示警告提示："当前筛选条件下没有可导出的数据，请调整筛选条件后重试"
-- ✓ 提示类型为 warning（黄色背景）
-- ✓ **不生成空CSV文件**
-- ✓ 历史记录列表**不增加**记录
-- ✓ 操作日志**不记录**此次操作
-
-**API验证**：
-```bash
-curl -X POST http://localhost:3001/api/export/detail \
-  -H "Content-Type: application/json" \
-  -d '{"dateFrom":"2025-01-01","dateTo":"2025-01-31","operator":"supervisor"}'
-```
-
-**预期响应**：
-```json
-{
-  "success": false,
-  "error": "没有符合条件的数据",
-  "message": "当前筛选条件下没有可导出的数据，请调整筛选条件后重试",
-  "recordCount": 0,
-  "filePath": ""
-}
-```
-
-#### 重启后持久化验证
-
-**操作步骤**：
-1. 进行若干次导出操作
-2. 停止开发服务器（Ctrl+C）
-3. 重新启动服务器
-4. 访问导出中心页面
-
-**预期结果**：
-- ✓ 历史导出记录完整保留
-- ✓ 导出文件在 `exports/` 目录中
-- ✓ 下载链接仍然有效
-- ✓ 操作日志完整
-
-**验证命令**：
-```bash
-# 检查导出记录数量
-curl http://localhost:3001/api/exports | jq length
-
-# 检查导出文件
-ls -lh exports/
-
-# 检查日志
-curl http://localhost:3001/api/operation-logs?operationType=EXPORT | jq length
-```
-
-#### 权限控制验证
-
-**操作步骤**：
-1. 以"复核员"身份登录（reviewer_1）
-2. 尝试选择"筛选导出"类型
-3. 尝试点击导出按钮
-
-**预期结果**：
-- ✓ "筛选导出"按钮显示为禁用状态（灰色）
-- ✓ 按钮提示："仅主管可使用"
-- ✓ 即使尝试API调用，也返回权限错误
-
-**API验证**：
-```bash
-# 以复核员身份调用筛选导出
-curl -X POST http://localhost:3001/api/export/filtered \
-  -H "Content-Type: application/json" \
-  -d '{"filters":{"status":"PENDING"},"operator":"reviewer_1"}'
-```
-
-**预期响应**：
-```json
-{
-  "error": "权限不足，只有主管可以导出筛选结果"
-}
-```
-
-#### 审计日志验证
-
-**操作步骤**：
-1. 以"主管"身份进行导出操作
-2. 点击"查看导出操作日志"按钮
-3. 切换"全部日志"和"我的日志"
-
-**预期结果**：
-- ✓ 主管可以查看所有用户的导出日志
-- ✓ 可以按操作人筛选日志
-- ✓ 日志显示操作类型、目标、时间、操作人、筛选条件
-
-**以复核员身份验证**：
-1. 以"复核员"身份登录
-2. 查看导出操作日志
-3. 切换到"我的日志"
-
-**预期结果**：
-- ✓ 只能看到自己的导出日志
-- ✓ 看不到其他用户的日志
-- ✓ 页面底部显示提示："注意：您当前以'复核员'身份登录，只能查看自己的导出日志"
-
-### 常见问题排查
-
-| 问题 | 可能原因 | 解决方案 |
-|------|---------|---------|
-| 导出按钮无响应 | 服务器未启动 | 检查 `npm run dev` 是否运行中 |
-| CSV文件乱码 | 未使用UTF-8 BOM | 确认后端使用 `\ufeff` BOM头 |
-| 空结果仍生成文件 | 后端未检查记录数 | 检查 exportDetail 返回逻辑 |
-| 权限提示错误 | 角色配置错误 | 检查数据库 users 表 |
-| 历史记录为空 | API未调用 | 检查前端 useEffect 依赖 |
-| 重启后记录丢失 | 数据库未保存 | 检查 database.ts saveDatabase 调用 |
-
-### 技术实现要点
-
-#### 后端关键逻辑
-
-1. **空数据检测**（exportService.ts）：
-   ```typescript
-   if (data.length === 0) {
-     return {
-       filePath: '',
-       record: null,  // 不创建记录
-       recordCount: 0
-     };
-   }
-   ```
-
-2. **权限检查**（server.ts）：
-   ```typescript
-   const user = await getUserByUsername(operator);
-   if (!user || !canExportBatch(user)) {
-     return res.status(403).json({ error: '权限不足' });
-   }
-   ```
-
-3. **日志记录**（userService.ts）：
-   ```typescript
-   await createOperationLog(
-     operator, 'EXPORT', targetType, targetId, JSON.stringify(params)
-   );
-   ```
-
-#### 前端关键逻辑
-
-1. **首屏加载**（Export.tsx）：
-   ```typescript
-   useEffect(() => {
-     const records = await api.export.list();
-     setExportHistory(records);
-   }, []);
-   ```
-
-2. **错误处理**：
-   ```typescript
-   if (result.success === false) {
-     setExportMessage({ type: 'warning', text: result.message });
-     return; // 不触发下载
-   }
-   ```
-
-3. **日志过滤**：
-   ```typescript
-   const filters = logFilter === 'mine' 
-     ? { operator: currentOperator } 
-     : undefined;
-   ```
-
-### 测试数据准备
-
-#### 最小测试数据集
-
-```javascript
-const readings = [
-  { meterId: 'TEST_001', readingDate: '2026-06-01', rawValue: 1000, meterType: 'ELECTRICITY' },
-  { meterId: 'TEST_001', readingDate: '2026-06-02', rawValue: 1200, meterType: 'ELECTRICITY' },
-  { meterId: 'TEST_001', readingDate: '2026-06-03', rawValue: 2500, meterType: 'ELECTRICITY' }, // 触发跳变
-];
-```
-
-#### 测试用户账号
-
-- **admin**：管理员角色，可执行所有操作
-- **supervisor**：主管角色，可执行筛选导出，查看所有日志
-- **reviewer_1**：复核员角色，基础导出权限，查看自己的日志
-- **reviewer_2**：复核员角色，基础导出权限，查看自己的日志
-
-### 性能基准
-
-- 导出1000条记录：< 2秒
-- 导出记录查询响应：< 500ms
-- 日志加载响应：< 300ms
-- 页面首屏加载：< 1秒
-
-### 安全注意事项
-
-1. **权限验证**：所有导出操作必须验证用户角色
-2. **输入校验**：严格校验日期范围、筛选参数
-3. **日志审计**：记录所有导出操作，包括失败尝试
-4. **文件清理**：定期清理 `exports/` 目录中的过期文件
-5. **敏感信息**：日志中不记录密码、Token等敏感信息

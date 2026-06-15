@@ -12,6 +12,32 @@ import { getAnomalyReplay, createRuleSnapshot } from './replayService.js';
 import { getDatabase } from './database.js';
 import { MeterReading, AnomalyWithReading, MeterType, BatchRevertResult } from './types.js';
 import { createRequire } from 'module';
+import {
+  createDeliveryPackage,
+  addRecordsToPackage,
+  getPackageById,
+  getPackages,
+  getPackageRecords,
+  getPackageTasks,
+  getPackageDownloads,
+  getPackageVersions,
+  getAuditLogs,
+  lockPackage,
+  unlockPackage,
+  generatePackageFile,
+  downloadPackage,
+  cancelPackage,
+  deletePackage,
+  rebuildPackage,
+  getPendingTasks,
+  canCreatePackage,
+  canViewPackage,
+  canModifyPackage,
+  canDeletePackage,
+  canDownloadPackage,
+  canViewAuditLogs,
+  getAllDownloadRecords
+} from './deliveryPackageService.js';
 
 const require = createRequire(import.meta.url);
 
@@ -751,6 +777,493 @@ app.post('/api/anomalies/:id/verify-revert', async (req, res) => {
     }
 
     res.json({ canRevert: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages', async (req, res) => {
+  try {
+    const { name, description, operator, filters, records } = req.body;
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canCreatePackage(user)) {
+      return res.status(403).json({ error: '您没有权限创建交付包' });
+    }
+
+    const { package: pkg, taskId } = await createDeliveryPackage(name, description, operator, filters);
+
+    if (records && Array.isArray(records) && records.length > 0) {
+      await addRecordsToPackage(pkg.id, records, operator);
+    }
+
+    res.json({
+      success: true,
+      package: pkg,
+      taskId
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages', async (req, res) => {
+  try {
+    const { status, createdBy, fromDate, toDate, operator } = req.query as any;
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+    }
+
+    const packages = await getPackages({ status, createdBy, fromDate, toDate });
+
+    const filteredPackages = operator
+      ? packages.filter(pkg => {
+          const user = getUserByUsername(operator);
+          return canViewPackage(user as any, pkg.createdBy);
+        })
+      : packages;
+
+    res.json(filteredPackages);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/:id', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewPackage(user, pkg.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此交付包' });
+      }
+    }
+
+    res.json(pkg);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages/:id/records', async (req, res) => {
+  try {
+    const { records, operator } = req.body;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canModifyPackage(user, pkg.createdBy, pkg.lockedBy)) {
+      return res.status(403).json({ error: '您没有权限修改此交付包' });
+    }
+
+    if (pkg.status !== 'PENDING' && pkg.status !== 'FAILED') {
+      return res.status(400).json({ error: '只能在待处理或失败状态下添加记录' });
+    }
+
+    if (!records || !Array.isArray(records)) {
+      return res.status(400).json({ error: '无效的记录数据' });
+    }
+
+    await addRecordsToPackage(req.params.id, records, operator);
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/:id/records', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewPackage(user, pkg.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此交付包' });
+      }
+    }
+
+    const records = await getPackageRecords(req.params.id);
+    res.json(records);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/:id/tasks', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewPackage(user, pkg.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此交付包' });
+      }
+    }
+
+    const tasks = await getPackageTasks(req.params.id);
+    res.json(tasks);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/:id/downloads', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewPackage(user, pkg.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此交付包' });
+      }
+    }
+
+    const downloads = await getPackageDownloads(req.params.id);
+    res.json(downloads);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/:id/versions', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewPackage(user, pkg.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此交付包' });
+      }
+    }
+
+    const versions = await getPackageVersions(req.params.id);
+    res.json(versions);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages/:id/generate', async (req, res) => {
+  try {
+    const { operator } = req.body;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canModifyPackage(user, pkg.createdBy, pkg.lockedBy)) {
+      return res.status(403).json({ error: '您没有权限生成此交付包' });
+    }
+
+    if (pkg.status === 'COMPLETED') {
+      return res.status(400).json({ error: '交付包已经生成完成' });
+    }
+
+    if (pkg.recordCount === 0) {
+      return res.status(400).json({ error: '交付包中没有记录，请先添加记录' });
+    }
+
+    const { filePath, fileName } = await generatePackageFile(req.params.id, operator);
+
+    res.json({
+      success: true,
+      filePath,
+      fileName
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/:id/download', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canDownloadPackage(user)) {
+      return res.status(403).json({ error: '您没有权限下载此交付包' });
+    }
+
+    const { filePath, fileName } = await downloadPackage(req.params.id, operator, req.ip);
+
+    res.json({
+      success: true,
+      filePath,
+      fileName,
+      downloadUrl: `/api/download/${fileName}`
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages/:id/lock', async (req, res) => {
+  try {
+    const { operator } = req.body;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    const result = await lockPackage(req.params.id, operator);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages/:id/unlock', async (req, res) => {
+  try {
+    const { operator } = req.body;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    const result = await unlockPackage(req.params.id, operator);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages/:id/cancel', async (req, res) => {
+  try {
+    const { operator, reason } = req.body;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canModifyPackage(user, pkg.createdBy, pkg.lockedBy)) {
+      return res.status(403).json({ error: '您没有权限取消此交付包' });
+    }
+
+    const result = await cancelPackage(req.params.id, operator, reason);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/delivery-packages/:id/rebuild', async (req, res) => {
+  try {
+    const { operator } = req.body;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canModifyPackage(user, pkg.createdBy, pkg.lockedBy)) {
+      return res.status(403).json({ error: '您没有权限重建此交付包' });
+    }
+
+    const result = await rebuildPackage(req.params.id, operator);
+
+    res.json({
+      success: true,
+      package: result.package,
+      taskId: result.taskId
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/delivery-packages/:id', async (req, res) => {
+  try {
+    const { operator } = req.body as any;
+
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canDeletePackage(user, pkg.createdBy)) {
+      return res.status(403).json({ error: '您没有权限删除此交付包' });
+    }
+
+    const result = await deletePackage(req.params.id, operator);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/audit-logs', async (req, res) => {
+  try {
+    const { packageId, operator, viewOperator } = req.query as any;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canViewAuditLogs(user)) {
+      return res.status(403).json({ error: '您没有权限查看审计日志' });
+    }
+
+    const logs = await getAuditLogs(packageId, viewOperator);
+    res.json(logs);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/downloads', async (req, res) => {
+  try {
+    const { operator, downloadedBy, fromDate, toDate } = req.query as any;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    const downloads = await getAllDownloadRecords({ downloadedBy, fromDate, toDate });
+
+    const filteredDownloads = user.role === 'ADMIN' || user.role === 'SUPERVISOR'
+      ? downloads
+      : downloads.filter(d => d.downloadedBy === user.username);
+
+    res.json(filteredDownloads);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

@@ -58,6 +58,83 @@ export interface ExportFilteredResult extends ExportResult {
   filters?: any;
 }
 
+export interface DeliveryPackage {
+  id: string;
+  packageName: string;
+  packageNo: string;
+  description?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  recordCount: number;
+  fileCount: number;
+  totalSize: number;
+  filePath?: string;
+  version: number;
+  lockedBy?: string;
+  lockedAt?: string;
+}
+
+export interface PackageRecord {
+  id: string;
+  packageId: string;
+  readingId?: string;
+  anomalyId?: string;
+  batchId?: string;
+  recordType: string;
+  includedAt: string;
+  includedBy: string;
+}
+
+export interface PackageTask {
+  id: string;
+  packageId: string;
+  taskType: string;
+  status: string;
+  progress: number;
+  errorMessage?: string;
+  retryCount: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface PackageDownload {
+  id: string;
+  packageId: string;
+  downloadedBy: string;
+  downloadedAt: string;
+  fileVersion?: string;
+  filePath?: string;
+  recordCount: number;
+  ipAddress?: string;
+}
+
+export interface PackageAuditLog {
+  id: string;
+  packageId?: string;
+  operation: string;
+  operator: string;
+  targetType?: string;
+  targetId?: string;
+  details?: string;
+  result?: string;
+  createdAt: string;
+}
+
+export interface PackageVersion {
+  id: string;
+  packageId: string;
+  version: number;
+  filePath?: string;
+  recordCount: number;
+  createdBy: string;
+  createdAt: string;
+  changeSummary?: string;
+  isActive: boolean;
+}
+
 export const api = {
   batches: {
     import: (readings: Array<{
@@ -225,5 +302,101 @@ export const api = {
 
   dashboard: {
     stats: () => fetchApi<DashboardStats>('/dashboard/stats'),
+  },
+
+  delivery: {
+    create: (name: string, description: string, operator: string, filters?: any) =>
+      fetchApi<{ success: boolean; package: DeliveryPackage; taskId: string }>('/delivery-packages', {
+        method: 'POST',
+        body: JSON.stringify({ name, description, operator, filters }),
+      }),
+
+    list: (filters?: { status?: string; createdBy?: string; fromDate?: string; toDate?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.set('status', filters.status);
+      if (filters?.createdBy) params.set('createdBy', filters.createdBy);
+      if (filters?.fromDate) params.set('fromDate', filters.fromDate);
+      if (filters?.toDate) params.set('toDate', filters.toDate);
+      const query = params.toString();
+      return fetchApi<DeliveryPackage[]>(`/delivery-packages${query ? `?${query}` : ''}`);
+    },
+
+    getById: (id: string) =>
+      fetchApi<DeliveryPackage>(`/delivery-packages/${id}`),
+
+    getRecords: (packageId: string) =>
+      fetchApi<PackageRecord[]>(`/delivery-packages/${packageId}/records`),
+
+    getTasks: (packageId: string) =>
+      fetchApi<PackageTask[]>(`/delivery-packages/${packageId}/tasks`),
+
+    getDownloads: (packageId: string) =>
+      fetchApi<PackageDownload[]>(`/delivery-packages/${packageId}/downloads`),
+
+    getVersions: (packageId: string) =>
+      fetchApi<PackageVersion[]>(`/delivery-packages/${packageId}/versions`),
+
+    addRecords: (packageId: string, records: Array<{ readingId?: string; anomalyId?: string; batchId?: string; recordType: string }>, operator: string) =>
+      fetchApi<{ success: boolean }>(`/delivery-packages/${packageId}/records`, {
+        method: 'POST',
+        body: JSON.stringify({ records, operator }),
+      }),
+
+    generate: (packageId: string, operator: string) =>
+      fetchApi<{ success: boolean; filePath: string; fileName: string }>(`/delivery-packages/${packageId}/generate`, {
+        method: 'POST',
+        body: JSON.stringify({ operator }),
+      }),
+
+    download: (packageId: string, operator: string) =>
+      fetchApi<{ success: boolean; filePath: string; fileName: string; downloadUrl: string }>(`/delivery-packages/${packageId}/download?operator=${encodeURIComponent(operator)}`),
+
+    lock: (packageId: string, operator: string) =>
+      fetchApi<{ success: boolean }>(`/delivery-packages/${packageId}/lock`, {
+        method: 'POST',
+        body: JSON.stringify({ operator }),
+      }),
+
+    unlock: (packageId: string, operator: string) =>
+      fetchApi<{ success: boolean }>(`/delivery-packages/${packageId}/unlock`, {
+        method: 'POST',
+        body: JSON.stringify({ operator }),
+      }),
+
+    cancel: (packageId: string, operator: string, reason?: string) =>
+      fetchApi<{ success: boolean }>(`/delivery-packages/${packageId}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ operator, reason }),
+      }),
+
+    rebuild: (packageId: string, operator: string) =>
+      fetchApi<{ success: boolean; package: DeliveryPackage; taskId: string }>(`/delivery-packages/${packageId}/rebuild`, {
+        method: 'POST',
+        body: JSON.stringify({ operator }),
+      }),
+
+    delete: (packageId: string, operator: string) =>
+      fetchApi<{ success: boolean }>(`/delivery-packages/${packageId}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ operator }),
+      }),
+
+    getAuditLogs: (packageId?: string, viewOperator?: string) => {
+      const params = new URLSearchParams();
+      if (packageId) params.set('packageId', packageId);
+      if (viewOperator) params.set('viewOperator', viewOperator);
+      const query = params.toString();
+      return fetchApi<PackageAuditLog[]>(`/delivery-packages/audit-logs${query ? `?${query}` : ''}`);
+    },
+
+    getDownloadRecords: (filters?: { downloadedBy?: string; fromDate?: string; toDate?: string; operator?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.downloadedBy) params.set('downloadedBy', filters.downloadedBy);
+      if (filters?.fromDate) params.set('fromDate', filters.fromDate);
+      if (filters?.toDate) params.set('toDate', filters.toDate);
+      if (filters?.operator) params.set('operator', filters.operator);
+      const query = params.toString();
+      return fetchApi<PackageDownload[]>(`/delivery-packages/downloads${query ? `?${query}` : ''}`);
+    },
   },
 };

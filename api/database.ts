@@ -46,7 +46,241 @@ function migrateDatabaseSchema(database: Database) {
     database.run("ALTER TABLE export_records ADD COLUMN record_count INTEGER DEFAULT 0");
   }
   
-  saveDatabase();
+  migrateDeliveryPackageTables(database);
+}
+
+function migrateDeliveryPackageTables(database: Database) {
+  const tables = database.exec("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'delivery_%'");
+  
+  if (tables.length === 0) {
+    createDeliveryPackageTables(database);
+  } else {
+    const existingTables = tables[0].values.map(row => row[0]);
+    
+    if (!existingTables.includes('delivery_packages')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS delivery_packages (
+          id TEXT PRIMARY KEY,
+          package_name TEXT NOT NULL,
+          package_no TEXT UNIQUE NOT NULL,
+          description TEXT,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          status TEXT DEFAULT 'PENDING',
+          record_count INTEGER DEFAULT 0,
+          file_count INTEGER DEFAULT 0,
+          total_size INTEGER DEFAULT 0,
+          file_path TEXT,
+          version INTEGER DEFAULT 1,
+          locked_by TEXT,
+          locked_at TEXT,
+          manifest_snapshot TEXT
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('delivery_package_records')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS delivery_package_records (
+          id TEXT PRIMARY KEY,
+          package_id TEXT NOT NULL,
+          reading_id TEXT,
+          anomaly_id TEXT,
+          batch_id TEXT,
+          record_type TEXT NOT NULL,
+          included_at TEXT NOT NULL,
+          included_by TEXT NOT NULL,
+          FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('delivery_package_tasks')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS delivery_package_tasks (
+          id TEXT PRIMARY KEY,
+          package_id TEXT NOT NULL,
+          task_type TEXT NOT NULL,
+          status TEXT DEFAULT 'PENDING',
+          progress INTEGER DEFAULT 0,
+          error_message TEXT,
+          retry_count INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT,
+          config_snapshot TEXT,
+          FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('delivery_package_downloads')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS delivery_package_downloads (
+          id TEXT PRIMARY KEY,
+          package_id TEXT NOT NULL,
+          downloaded_by TEXT NOT NULL,
+          downloaded_at TEXT NOT NULL,
+          file_version TEXT,
+          file_path TEXT,
+          record_count INTEGER DEFAULT 0,
+          ip_address TEXT,
+          FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('delivery_package_audit_logs')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS delivery_package_audit_logs (
+          id TEXT PRIMARY KEY,
+          package_id TEXT,
+          operation TEXT NOT NULL,
+          operator TEXT NOT NULL,
+          target_type TEXT,
+          target_id TEXT,
+          details TEXT,
+          ip_address TEXT,
+          result TEXT,
+          created_at TEXT NOT NULL
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('delivery_package_versions')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS delivery_package_versions (
+          id TEXT PRIMARY KEY,
+          package_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          file_path TEXT,
+          record_count INTEGER DEFAULT 0,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          change_summary TEXT,
+          is_active INTEGER DEFAULT 0,
+          FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_packages_status ON delivery_packages(status)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_packages_created_by ON delivery_packages(created_by)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_records_package ON delivery_package_records(package_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_tasks_package ON delivery_package_tasks(package_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_downloads_package ON delivery_package_downloads(package_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_audit_package ON delivery_package_audit_logs(package_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_versions_package ON delivery_package_versions(package_id)`);
+    
+    saveDatabase();
+  }
+}
+
+function createDeliveryPackageTables(database: Database) {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS delivery_packages (
+      id TEXT PRIMARY KEY,
+      package_name TEXT NOT NULL,
+      package_no TEXT UNIQUE NOT NULL,
+      description TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      status TEXT DEFAULT 'PENDING',
+      record_count INTEGER DEFAULT 0,
+      file_count INTEGER DEFAULT 0,
+      total_size INTEGER DEFAULT 0,
+      file_path TEXT,
+      version INTEGER DEFAULT 1,
+      locked_by TEXT,
+      locked_at TEXT,
+      manifest_snapshot TEXT
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS delivery_package_records (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      reading_id TEXT,
+      anomaly_id TEXT,
+      batch_id TEXT,
+      record_type TEXT NOT NULL,
+      included_at TEXT NOT NULL,
+      included_by TEXT NOT NULL,
+      FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS delivery_package_tasks (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      status TEXT DEFAULT 'PENDING',
+      progress INTEGER DEFAULT 0,
+      error_message TEXT,
+      retry_count INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      config_snapshot TEXT,
+      FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS delivery_package_downloads (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      downloaded_by TEXT NOT NULL,
+      downloaded_at TEXT NOT NULL,
+      file_version TEXT,
+      file_path TEXT,
+      record_count INTEGER DEFAULT 0,
+      ip_address TEXT,
+      FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS delivery_package_audit_logs (
+      id TEXT PRIMARY KEY,
+      package_id TEXT,
+      operation TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      details TEXT,
+      ip_address TEXT,
+      result TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS delivery_package_versions (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      file_path TEXT,
+      record_count INTEGER DEFAULT 0,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      change_summary TEXT,
+      is_active INTEGER DEFAULT 0,
+      FOREIGN KEY (package_id) REFERENCES delivery_packages(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_packages_status ON delivery_packages(status)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_packages_created_by ON delivery_packages(created_by)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_records_package ON delivery_package_records(package_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_tasks_package ON delivery_package_tasks(package_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_downloads_package ON delivery_package_downloads(package_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_audit_package ON delivery_package_audit_logs(package_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_delivery_package_versions_package ON delivery_package_versions(package_id)`);
 }
 
 function createTables(database: Database) {
@@ -165,6 +399,8 @@ function createTables(database: Database) {
       FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
     )
   `);
+
+  createDeliveryPackageTables(database);
 
   database.run(`CREATE INDEX IF NOT EXISTS idx_meter_readings_meter_date ON meter_readings(meter_id, reading_date)`);
   database.run(`CREATE INDEX IF NOT EXISTS idx_meter_readings_batch ON meter_readings(batch_id)`);
