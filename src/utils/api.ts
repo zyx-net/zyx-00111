@@ -398,5 +398,20 @@ export const api = {
       const query = params.toString();
       return fetchApi<PackageDownload[]>(`/delivery-packages/downloads${query ? `?${query}` : ''}`);
     },
+
+    getLockStatus: (packageId: string) =>
+      fetchApi<{ packageId: string; locked: boolean; lockInfo: any; packageLocked: boolean; packageLockedBy: string }>(`/delivery-packages/${packageId}/lock-status`),
+
+    systemRecovery: (operator: string) => {
+      const params = new URLSearchParams();
+      params.set('operator', operator);
+      return fetchApi<{
+        success: boolean;
+        staleTasksRecovery: { recoveredCount: number; details: string[] };
+        processingRecovery: { recoveredCount: number; packageIds: string[] };
+        totalRecovered: number;
+        recoveredAt: string;
+      }>(`/delivery-packages/system/recovery?${params.toString()}`);
+    },
   },
 };

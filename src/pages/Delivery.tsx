@@ -165,7 +165,14 @@ export function Delivery() {
         }
       }
     } catch (err: any) {
-      setMessage({ type: 'error', text: err.message || '生成交付包失败' });
+      const errorMsg = err.message || '生成交付包失败';
+      if (errorMsg.includes('正在被') || errorMsg.includes('处理中')) {
+        setMessage({ type: 'warning', text: errorMsg });
+      } else if (errorMsg.includes('无法获取操作锁')) {
+        setMessage({ type: 'warning', text: '系统繁忙，请稍后重试' });
+      } else {
+        setMessage({ type: 'error', text: errorMsg });
+      }
     } finally {
       setLoading(false);
     }
@@ -188,7 +195,14 @@ export function Delivery() {
         loadPackages();
       }
     } catch (err: any) {
-      setMessage({ type: 'error', text: err.message || '下载失败' });
+      const errorMsg = err.message || '下载失败';
+      if (errorMsg.includes('越权') || errorMsg.includes('已被记录')) {
+        setMessage({ type: 'error', text: '越权访问已被记录，请联系管理员' });
+      } else if (errorMsg.includes('没有权限')) {
+        setMessage({ type: 'error', text: '您没有权限下载此交付包' });
+      } else {
+        setMessage({ type: 'error', text: errorMsg });
+      }
     }
   };
 
@@ -782,14 +796,19 @@ function PackageDetailModal({ package: pkg, records, tasks, downloads, versions,
                 <div key={task.id} className="p-3 bg-slate-50 rounded-lg">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-slate-700">{task.taskType}</span>
+                      <span className="text-sm font-medium text-slate-700">{task.taskType === 'GENERATE' ? '文件生成' : task.taskType}</span>
                       <span className={`px-2 py-0.5 rounded text-xs ${
                         task.status === 'COMPLETED' ? 'bg-green-100 text-green-700' :
                         task.status === 'FAILED' ? 'bg-red-100 text-red-700' :
                         task.status === 'PROCESSING' ? 'bg-blue-100 text-blue-700' :
+                        task.status === 'CANCELLED' ? 'bg-gray-100 text-gray-500' :
                         'bg-slate-100 text-slate-700'
                       }`}>
-                        {task.status}
+                        {task.status === 'PENDING' ? '排队中' :
+                         task.status === 'PROCESSING' ? '生成中' :
+                         task.status === 'COMPLETED' ? '已完成' :
+                         task.status === 'FAILED' ? '失败' :
+                         task.status === 'CANCELLED' ? '已取消' : task.status}
                       </span>
                     </div>
                     <span className="text-xs text-slate-400">
@@ -800,7 +819,10 @@ function PackageDetailModal({ package: pkg, records, tasks, downloads, versions,
                     <div className="mt-2">
                       <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-blue-500 transition-all"
+                          className={`h-full transition-all ${
+                            task.status === 'FAILED' ? 'bg-red-500' :
+                            task.status === 'COMPLETED' ? 'bg-green-500' : 'bg-blue-500'
+                          }`}
                           style={{ width: `${task.progress}%` }}
                         />
                       </div>
@@ -808,7 +830,13 @@ function PackageDetailModal({ package: pkg, records, tasks, downloads, versions,
                     </div>
                   )}
                   {task.errorMessage && (
-                    <p className="text-xs text-red-600 mt-1">错误: {task.errorMessage}</p>
+                    <div className="mt-2 p-2 bg-red-50 rounded border border-red-200">
+                      <p className="text-xs text-red-600 font-medium">失败原因:</p>
+                      <p className="text-xs text-red-700 mt-1">{task.errorMessage}</p>
+                    </div>
+                  )}
+                  {task.retryCount > 0 && (
+                    <p className="text-xs text-orange-600 mt-1">重试次数: {task.retryCount}</p>
                   )}
                 </div>
               )) : (
@@ -874,15 +902,45 @@ function PackageDetailModal({ package: pkg, records, tasks, downloads, versions,
           {activeTab === 'audit' && (
             <div className="space-y-2">
               {auditLogs.length > 0 ? auditLogs.map((log) => (
-                <div key={log.id} className="p-3 bg-slate-50 rounded-lg">
+                <div key={log.id} className={`p-3 rounded-lg ${
+                  log.operation === 'UNAUTHORIZED_DOWNLOAD_ATTEMPT' 
+                    ? 'bg-red-50 border border-red-200' 
+                    : log.result === 'FAILED' 
+                    ? 'bg-yellow-50 border border-yellow-200'
+                    : 'bg-slate-50'
+                }`}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
-                        {log.operation}
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                        log.operation === 'UNAUTHORIZED_DOWNLOAD_ATTEMPT' 
+                          ? 'bg-red-100 text-red-700' 
+                          : log.operation.includes('CREATE') 
+                          ? 'bg-blue-100 text-blue-700'
+                          : log.operation.includes('DOWNLOAD')
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-slate-100 text-slate-700'
+                      }`}>
+                        {log.operation === 'UNAUTHORIZED_DOWNLOAD_ATTEMPT' ? '越权访问' :
+                         log.operation === 'CREATE_PACKAGE' ? '创建' :
+                         log.operation === 'GENERATE_FILE' ? '生成' :
+                         log.operation === 'DOWNLOAD' ? '下载' :
+                         log.operation === 'CANCEL' ? '取消' :
+                         log.operation === 'REBUILD' ? '重建' :
+                         log.operation === 'LOCK' ? '锁定' :
+                         log.operation === 'UNLOCK' ? '解锁' :
+                         log.operation === 'ADD_RECORDS' ? '添加记录' :
+                         log.operation === 'DELETE' ? '删除' :
+                         log.operation.includes('RECOVERY') ? '系统恢复' :
+                         log.operation}
                       </span>
                       <span className="text-sm font-medium text-slate-700">
                         {log.operator}
                       </span>
+                      {log.operation === 'UNAUTHORIZED_DOWNLOAD_ATTEMPT' && (
+                        <span className="px-2 py-0.5 rounded text-xs bg-red-100 text-red-700 font-medium">
+                          ⚠️ 越权
+                        </span>
+                      )}
                     </div>
                     <span className="text-xs text-slate-400">
                       {new Date(log.createdAt).toLocaleString()}
@@ -892,8 +950,12 @@ function PackageDetailModal({ package: pkg, records, tasks, downloads, versions,
                     <p className="text-xs text-slate-500 mt-1">详情: {log.details}</p>
                   )}
                   {log.result && (
-                    <p className={`text-xs mt-1 ${log.result === 'SUCCESS' ? 'text-green-600' : 'text-red-600'}`}>
-                      结果: {log.result}
+                    <p className={`text-xs mt-1 font-medium ${
+                      log.result === 'SUCCESS' ? 'text-green-600' : 
+                      log.result === 'FAILED' ? 'text-red-600' : 
+                      'text-slate-600'
+                    }`}>
+                      结果: {log.result === 'SUCCESS' ? '成功' : log.result === 'FAILED' ? '失败' : log.result}
                     </p>
                   )}
                 </div>

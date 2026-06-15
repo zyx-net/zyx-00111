@@ -112,32 +112,36 @@ node verify-delivery-package.cjs
 1. **交付包管理**
    - 创建、查看、删除交付包
    - 筛选条件支持日期范围、能源类型、异常状态等
-   - 交付包状态跟踪：待处理、生成中、已完成、失败、已取消
+   - 交付包状态跟踪：待处理、排队中、生成中、已完成、失败、已取消
 
 2. **文件生成**
    - 异步生成CSV格式的交付包文件
    - 包含交付清单和记录明细
    - 版本管理，历史记录完整保留
+   - 并发控制，防止重复生成
 
 3. **下载管理**
    - 下载记录完整保留
    - 支持版本回溯下载
+   - 严格权限校验
 
 4. **权限和审计**
    - 不同角色只能看到自己有权访问的交付包
    - 下载记录按角色过滤
-   - 审计明细记录所有操作
+   - 审计明细记录所有操作（包括越权尝试）
    - 越权访问明确拒绝并留痕
 
 5. **服务重启恢复**
-   - 任务状态自动恢复
+   - 服务启动时自动恢复中断的任务状态
    - 文件下载地址持久化
    - 配置信息完整保留
+   - PROCESSING状态自动标记为FAILED
 
 6. **并发控制**
    - 文件版本递增，不会覆盖
-   - 锁定规则防止并发修改
+   - 操作锁防止并发生成
    - 历史记录完整可查
+   - 撤销后重建版本号正确递增
 
 ### 权限说明
 
@@ -174,8 +178,10 @@ node verify-delivery-package.cjs
 | GET | /api/delivery-packages/:id/tasks | 查询任务日志 |
 | GET | /api/delivery-packages/:id/versions | 查询版本历史 |
 | GET | /api/delivery-packages/:id/downloads | 查询下载记录 |
+| GET | /api/delivery-packages/:id/lock-status | 查询操作锁状态 |
 | GET | /api/delivery-packages/audit-logs | 查询审计日志 |
 | GET | /api/delivery-packages/downloads | 查询下载记录（全局） |
+| GET | /api/delivery-packages/system/recovery | 系统恢复接口（仅管理员） |
 
 ## 验证指南
 
@@ -241,46 +247,54 @@ node test-missing-detection.cjs
 
 ### 离线交付包验证
 
-#### 创建和生成交付包
+### 完整测试套件
 
-1. 进入"离线交付包"页面
-2. 点击"新建交付包"
-3. 输入名称和描述，设置筛选条件
-4. 点击创建
-5. 在交付包详情中添加记录
-6. 点击"生成文件"按钮
-7. 验证：状态变为"已完成"，可下载文件
-
-**测试步骤**：
 ```bash
-node test-delivery-package.cjs
+# 运行完整测试套件（推荐）
+run-delivery-tests.bat
+
+# 或单独运行各项测试:
+node test-delivery-complete.cjs      # 完整回归测试
+node test-delivery-concurrency.cjs    # 并发场景测试
+node test-delivery-permissions.cjs    # 权限隔离测试
+node test-delivery-recovery.cjs      # 重启恢复测试
+node verify-delivery-package.cjs      # 可复现验证
+node generate-delivery-sample.cjs     # 示例数据生成
 ```
 
-#### 权限隔离验证
+### 测试覆盖场景
 
-1. 以"复核员"身份登录
-2. 创建自己的交付包
-3. 尝试查看其他人的交付包
-4. **验证点**：
-   - 无法看到其他人创建的交付包
-   - 下载记录只显示自己的记录
-   - 审计日志无法访问
+1. **完整回归测试** (`test-delivery-complete.cjs`)
+   - 环境准备和数据清理
+   - 基础功能：创建、生成、下载
+   - 权限隔离：角色可见性、操作限制
+   - 取消和重建：状态转换、版本号递增
+   - 版本管理：历史记录完整性
+   - 锁定功能：锁定/解锁
+   - 审计日志：操作记录、权限校验
+   - 重启恢复：数据持久化验证
 
-**测试步骤**：
-```bash
-node verify-delivery-package.cjs
-```
+2. **并发场景测试** (`test-delivery-concurrency.cjs`)
+   - 并发生成：同一交付包同时生成
+   - 版本号：每次生成版本递增
+   - 撤销重建：版本号正确处理
+   - 历史记录：完整保留
+   - 重复提交：数据去重
 
-#### 重启恢复验证
+3. **权限隔离测试** (`test-delivery-permissions.cjs`)
+   - 角色创建权限
+   - 交付包可见性
+   - 操作权限限制
+   - 越权访问检测和审计
+   - 复核员限制
+   - 主管完整权限
 
-1. 创建并生成若干交付包
-2. 停止服务器（Ctrl+C）
-3. 重新启动服务器
-4. 验证：
-   - 交付包列表完整保留
-   - 已完成的交付包文件路径有效
-   - 下载记录完整保留
-   - 审计日志完整保留
+4. **重启恢复测试** (`test-delivery-recovery.cjs`)
+   - 中断任务检测
+   - 状态自动恢复
+   - 文件路径持久化
+   - 版本历史保留
+   - 重建失败任务
 
 ### 失败路径验证
 
@@ -472,31 +486,37 @@ node verify-delivery-package.cjs
    - ✓ 可以添加记录到交付包
    - ✓ 可以生成交付包文件（CSV格式）
    - ✓ 文件包含清单和记录明细
+   - ✓ 并发生成时只有一个成功
 
 2. **下载和记录**
    - ✓ 可以下载生成的交付包
    - ✓ 下载记录完整保留
    - ✓ 版本历史清晰可查
+   - ✓ 每次生成版本号递增
 
 3. **权限隔离**
    - ✓ 不同角色只能看到自己有权访问的交付包
    - ✓ 下载记录按角色过滤
    - ✓ 越权访问明确拒绝
+   - ✓ 越权尝试被审计日志记录
 
 4. **审计追踪**
    - ✓ 所有操作记录到审计日志
    - ✓ 主管可查看所有审计日志
    - ✓ 复核员无法访问审计日志
+   - ✓ 越权访问有特殊标记
 
 5. **重启恢复**
    - ✓ 交付包状态在重启后保持一致
    - ✓ 文件下载地址持久化
    - ✓ 配置信息完整保留
+   - ✓ PROCESSING状态自动标记为FAILED
 
 6. **并发控制**
    - ✓ 文件版本递增，不会覆盖
    - ✓ 锁定规则防止并发修改
    - ✓ 取消后可以重建
+   - ✓ 重建后版本号正确递增
 
 ### 验收步骤
 
@@ -506,23 +526,32 @@ npm run dev
 ```
 **预期**：前端运行在 http://localhost:5173，后端运行在 http://localhost:3001
 
-#### 2. 离线交付包回归测试
+#### 2. 运行完整测试套件
 ```bash
-node test-delivery-package.cjs
+# Windows
+run-delivery-tests.bat
+
+# 或逐个运行
+node test-delivery-complete.cjs
+node test-delivery-concurrency.cjs
+node test-delivery-permissions.cjs
+node verify-delivery-package.cjs
 ```
 **预期**：所有测试通过
 
-#### 3. 离线交付包可复现验证
-```bash
-node verify-delivery-package.cjs
-```
-**预期**：完整链路验证通过
-
-#### 4. 生成示例数据
+#### 3. 生成示例数据
 ```bash
 node generate-delivery-sample.cjs
 ```
 **预期**：创建测试数据和示例交付包
+
+#### 4. 手动验证
+1. 访问 http://localhost:5173
+2. 进入"离线交付包"页面
+3. 创建新的交付包
+4. 添加记录并生成文件
+5. 下载文件验证内容
+6. 检查审计日志
 
 ### 常见问题排查
 
@@ -530,9 +559,12 @@ node generate-delivery-sample.cjs
 |------|---------|---------|
 | 交付包状态一直是"待处理" | 服务未正常响应 | 检查服务器日志 |
 | 生成文件失败 | 没有添加记录 | 先添加记录再生成 |
-| 无法下载文件 | 文件路径无效 | 检查exports目录 |
+| 并发生成时两个都失败 | 锁机制问题 | 检查操作锁状态 |
+| 无法下载文件 | 文件路径无效或无权限 | 检查exports目录和用户权限 |
 | 权限错误 | 角色配置错误 | 检查数据库users表 |
 | 重启后状态丢失 | 数据库未保存 | 检查database.ts saveDatabase调用 |
+| 版本号不正确 | 重建后未重新生成 | 重建后需要重新生成文件 |
+| 越权访问未被记录 | 审计日志接口问题 | 检查审计日志查询 |
 
 ## License
 

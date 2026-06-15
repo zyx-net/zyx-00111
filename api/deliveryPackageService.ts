@@ -86,6 +86,90 @@ export type PackageStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 
 export type TaskType = 'GENERATE' | 'VALIDATE' | 'ARCHIVE';
 export type TaskStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
+interface ConcurrencyLock {
+  packageId: string;
+  operation: string;
+  lockedBy: string;
+  lockedAt: string;
+  expiresAt: string;
+}
+
+const operationLocks: Map<string, ConcurrencyLock> = new Map();
+
+function acquireOperationLock(packageId: string, operation: string, user: string, timeoutSeconds: number = 30): boolean {
+  const lockKey = `${packageId}:${operation}`;
+  const existingLock = operationLocks.get(lockKey);
+  const now = new Date();
+
+  if (existingLock) {
+    const expiresAt = new Date(existingLock.expiresAt);
+    if (expiresAt > now && existingLock.lockedBy !== user) {
+      return false;
+    }
+  }
+
+  const expiresAt = new Date(now.getTime() + timeoutSeconds * 1000);
+  operationLocks.set(lockKey, {
+    packageId,
+    operation,
+    lockedBy: user,
+    lockedAt: now.toISOString(),
+    expiresAt: expiresAt.toISOString()
+  });
+
+  return true;
+}
+
+function releaseOperationLock(packageId: string, operation: string, user: string): boolean {
+  const lockKey = `${packageId}:${operation}`;
+  const existingLock = operationLocks.get(lockKey);
+
+  if (existingLock && existingLock.lockedBy === user) {
+    operationLocks.delete(lockKey);
+    return true;
+  }
+
+  return false;
+}
+
+export function cleanupExpiredLocks(): number {
+  const now = new Date();
+  let cleanedCount = 0;
+
+  for (const [key, lock] of operationLocks.entries()) {
+    if (new Date(lock.expiresAt) < now) {
+      operationLocks.delete(key);
+      cleanedCount++;
+    }
+  }
+
+  return cleanedCount;
+}
+
+export function checkDuplicateSubmission(packageId: string, recordHashes: string[]): { isDuplicate: boolean; existingRecords: string[] } {
+  const db = getDatabase();
+  const existingRecords: string[] = [];
+
+  for (const hash of recordHashes) {
+    const result = db.exec(
+      `SELECT pr.id FROM delivery_package_records pr
+       WHERE pr.package_id = ? AND (
+         pr.reading_id IS NOT NULL OR pr.anomaly_id IS NOT NULL OR pr.batch_id IS NOT NULL
+       )`,
+      [packageId]
+    );
+
+    if (result.length > 0 && result[0].values.length > 0) {
+      existingRecords.push(hash);
+    }
+  }
+
+  return {
+    isDuplicate: existingRecords.length > 0,
+    existingRecords
+  };
+}
+
 function generatePackageNo(): string {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
@@ -193,13 +277,13 @@ export async function createDeliveryPackage(
   db.run(
     `INSERT INTO delivery_packages (id, package_name, package_no, description, created_by, created_at, updated_at, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
-    [packageId, name, packageNo, description, createdBy, now, now]
+    [packageId, name, packageNo, description || '', createdBy, now, now]
   );
 
   db.run(
     `INSERT INTO delivery_package_tasks (id, package_id, task_type, status, created_at, config_snapshot)
      VALUES (?, ?, ?, 'PENDING', ?, ?)`,
-    [taskId, packageId, 'GENERATE', now, JSON.stringify(filters)]
+    [taskId, packageId, 'GENERATE', now, JSON.stringify(filters || {})]
   );
 
   await createAuditLog(packageId, 'CREATE_PACKAGE', createdBy, 'package', packageId, JSON.stringify({ name, filters }), 'SUCCESS');
@@ -211,7 +295,7 @@ export async function createDeliveryPackage(
       id: packageId,
       packageName: name,
       packageNo,
-      description,
+      description: description || '',
       createdBy,
       createdAt: now,
       updatedAt: now,
@@ -523,110 +607,138 @@ export async function generatePackageFile(packageId: string, operator: string): 
     throw new Error('交付包不存在');
   }
 
-  await updatePackageStatus(packageId, 'PROCESSING', undefined, operator);
-
-  const records = await getPackageRecords(packageId);
-  const readings: any[] = [];
-  const anomalies: any[] = [];
-
-  for (const record of records) {
-    if (record.readingId) {
-      const readingResult = db.exec(
-        `SELECT mr.*, b.batch_no 
-         FROM meter_readings mr 
-         LEFT JOIN batches b ON mr.batch_id = b.id 
-         WHERE mr.id = ?`,
-        [record.readingId]
-      );
-      if (readingResult.length > 0 && readingResult[0].values.length > 0) {
-        const row = readingResult[0].values[0];
-        readings.push({
-          表计编号: row[1],
-          读数日期: row[2],
-          原始值: row[3],
-          修正值: row[4],
-          能源类型: row[5] === 'WATER' ? '水' : row[5] === 'ELECTRICITY' ? '电' : '气',
-          批次号: row[12]
-        });
-      }
-    }
-
-    if (record.anomalyId) {
-      const anomalyResult = db.exec(
-        `SELECT a.*, mr.meter_id, mr.meter_type, mr.reading_date, mr.raw_value 
-         FROM anomalies a 
-         JOIN meter_readings mr ON a.reading_id = mr.id 
-         WHERE a.id = ?`,
-        [record.anomalyId]
-      );
-      if (anomalyResult.length > 0 && anomalyResult[0].values.length > 0) {
-        const row = anomalyResult[0].values[0];
-        anomalies.push({
-          表计编号: row[8],
-          读数日期: row[9],
-          原始值: row[10],
-          异常类型: row[2] === 'JUMP' ? '跳变' : row[2] === 'MISSING' ? '缺失' : '回退',
-          异常状态: row[4]
-        });
-      }
+  if (pkg.status === 'PROCESSING') {
+    const lockStatus = getOperationLockStatus(packageId);
+    if (lockStatus && lockStatus.lockedBy !== operator) {
+      throw new Error(`该交付包正在被用户 ${lockStatus.lockedBy} 处理中，请稍后重试`);
     }
   }
 
-  const meterTypeMap: Record<string, string> = { 'WATER': '水', 'ELECTRICITY': '电', 'GAS': '气' };
-  const statusMap: Record<string, string> = { 'PENDING': '待复核', 'CORRECTED': '已修正', 'IGNORED': '已忽略', 'REVERTED': '已撤销' };
-  const anomalyTypeMap: Record<string, string> = { 'JUMP': '跳变', 'MISSING': '缺失', 'ROLLBACK': '回退' };
-
-  const manifestData = [
-    { 项目: '交付包名称', 值: pkg.packageName },
-    { 项目: '交付包编号', 值: pkg.packageNo },
-    { 项目: '创建人', 值: pkg.createdBy },
-    { 项目: '创建时间', 值: pkg.createdAt },
-    { 项目: '状态', 值: statusMap[pkg.status] || pkg.status },
-    { 项目: '记录总数', 值: readings.length + anomalies.length },
-    { 项目: '读数记录数', 值: readings.length },
-    { 项目: '异常记录数', 值: anomalies.length }
-  ];
-
-  const csvContent = [
-    '【交付包清单】',
-    toCSV(manifestData),
-    '',
-    '【读数明细】',
-    readings.length > 0 ? toCSV(readings) : '（无读数记录）',
-    '',
-    '【异常明细】',
-    anomalies.length > 0 ? toCSV(anomalies) : '（无异常记录）'
-  ].join('\r\n');
-
-  const timestamp = Date.now();
-  const fileName = `delivery_package_${pkg.packageNo}_${timestamp}.csv`;
-  const filePath = await saveCSVFile(fileName, csvContent);
-
-  const versionId = uuidv4();
-  db.run(
-    `INSERT INTO delivery_package_versions (id, package_id, version, file_path, record_count, created_by, created_at, change_summary, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-    [versionId, packageId, pkg.version, fileName, records.length, operator, now, '初始版本']
-  );
-
-  db.run(`UPDATE delivery_packages SET file_path = ?, total_size = ?, status = 'COMPLETED', updated_at = ? WHERE id = ?`, [fileName, csvContent.length, now, packageId]);
-
-  db.run(`UPDATE delivery_package_versions SET is_active = 0 WHERE package_id = ? AND id != ?`, [packageId, versionId]);
-
-  const taskResult = db.exec(
-    `SELECT id FROM delivery_package_tasks WHERE package_id = ? AND task_type = 'GENERATE' ORDER BY created_at DESC LIMIT 1`,
-    [packageId]
-  );
-  if (taskResult.length > 0 && taskResult[0].values.length > 0) {
-    const taskId = taskResult[0].values[0][0];
-    db.run(`UPDATE delivery_package_tasks SET status = 'COMPLETED', progress = 100, completed_at = ? WHERE id = ?`, [now, taskId]);
+  if (!acquireOperationLock(packageId, 'generate', operator, 60)) {
+    throw new Error('无法获取操作锁，请稍后重试');
   }
 
-  await createAuditLog(packageId, 'GENERATE_FILE', operator, 'package', packageId, JSON.stringify({ fileName, recordCount: records.length }), 'SUCCESS');
+  try {
+    await updatePackageStatus(packageId, 'PROCESSING', undefined, operator);
 
-  saveDatabase();
+    const taskResult = db.exec(
+      `SELECT id FROM delivery_package_tasks WHERE package_id = ? AND task_type = 'GENERATE' ORDER BY created_at DESC LIMIT 1`,
+      [packageId]
+    );
+    if (taskResult.length > 0 && taskResult[0].values.length > 0) {
+      const taskId = taskResult[0].values[0][0] as string;
+      db.run(`UPDATE delivery_package_tasks SET started_at = ? WHERE id = ?`, [now, taskId]);
+    }
 
-  return { filePath, fileName };
+    const records = await getPackageRecords(packageId);
+    const readings: any[] = [];
+    const anomalies: any[] = [];
+
+    for (const record of records) {
+      if (record.readingId) {
+        const readingResult = db.exec(
+          `SELECT mr.*, b.batch_no 
+           FROM meter_readings mr 
+           LEFT JOIN batches b ON mr.batch_id = b.id 
+           WHERE mr.id = ?`,
+          [record.readingId]
+        );
+        if (readingResult.length > 0 && readingResult[0].values.length > 0) {
+          const row = readingResult[0].values[0];
+          readings.push({
+            表计编号: row[1],
+            读数日期: row[2],
+            原始值: row[3],
+            修正值: row[4],
+            能源类型: row[5] === 'WATER' ? '水' : row[5] === 'ELECTRICITY' ? '电' : '气',
+            批次号: row[12]
+          });
+        }
+      }
+
+      if (record.anomalyId) {
+        const anomalyResult = db.exec(
+          `SELECT a.*, mr.meter_id, mr.meter_type, mr.reading_date, mr.raw_value 
+           FROM anomalies a 
+           JOIN meter_readings mr ON a.reading_id = mr.id 
+           WHERE a.id = ?`,
+          [record.anomalyId]
+        );
+        if (anomalyResult.length > 0 && anomalyResult[0].values.length > 0) {
+          const row = anomalyResult[0].values[0];
+          anomalies.push({
+            表计编号: row[8],
+            读数日期: row[9],
+            原始值: row[10],
+            异常类型: row[2] === 'JUMP' ? '跳变' : row[2] === 'MISSING' ? '缺失' : '回退',
+            异常状态: row[4]
+          });
+        }
+      }
+    }
+
+    const meterTypeMap: Record<string, string> = { 'WATER': '水', 'ELECTRICITY': '电', 'GAS': '气' };
+    const statusMap: Record<string, string> = { 'PENDING': '待复核', 'CORRECTED': '已修正', 'IGNORED': '已忽略', 'REVERTED': '已撤销' };
+    const anomalyTypeMap: Record<string, string> = { 'JUMP': '跳变', 'MISSING': '缺失', 'ROLLBACK': '回退' };
+
+    const manifestData = [
+      { 项目: '交付包名称', 值: pkg.packageName },
+      { 项目: '交付包编号', 值: pkg.packageNo },
+      { 项目: '创建人', 值: pkg.createdBy },
+      { 项目: '创建时间', 值: pkg.createdAt },
+      { 项目: '状态', 值: statusMap[pkg.status] || pkg.status },
+      { 项目: '记录总数', 值: readings.length + anomalies.length },
+      { 项目: '读数记录数', 值: readings.length },
+      { 项目: '异常记录数', 值: anomalies.length }
+    ];
+
+    const csvContent = [
+      '【交付包清单】',
+      toCSV(manifestData),
+      '',
+      '【读数明细】',
+      readings.length > 0 ? toCSV(readings) : '（无读数记录）',
+      '',
+      '【异常明细】',
+      anomalies.length > 0 ? toCSV(anomalies) : '（无异常记录）'
+    ].join('\r\n');
+
+    const timestamp = Date.now();
+    const newVersion = pkg.version + 1;
+    const fileName = `delivery_package_${pkg.packageNo}_v${newVersion}_${timestamp}.csv`;
+    const filePath = await saveCSVFile(fileName, csvContent);
+
+    const versionId = uuidv4();
+    db.run(
+      `INSERT INTO delivery_package_versions (id, package_id, version, file_path, record_count, created_by, created_at, change_summary, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [versionId, packageId, newVersion, fileName, records.length, operator, now, `生成版本 v${newVersion}`]
+    );
+
+    db.run(`UPDATE delivery_packages SET file_path = ?, total_size = ?, status = 'COMPLETED', version = ?, updated_at = ? WHERE id = ?`, [fileName, csvContent.length, newVersion, now, packageId]);
+
+    db.run(`UPDATE delivery_package_versions SET is_active = 0 WHERE package_id = ? AND id != ?`, [packageId, versionId]);
+
+    const updatedTaskResult = db.exec(
+      `SELECT id FROM delivery_package_tasks WHERE package_id = ? AND task_type = 'GENERATE' ORDER BY created_at DESC LIMIT 1`,
+      [packageId]
+    );
+    if (updatedTaskResult.length > 0 && updatedTaskResult[0].values.length > 0) {
+      const taskId = updatedTaskResult[0].values[0][0] as string;
+      db.run(`UPDATE delivery_package_tasks SET status = 'COMPLETED', progress = 100, completed_at = ? WHERE id = ?`, [now, taskId]);
+    }
+
+    await createAuditLog(packageId, 'GENERATE_FILE', operator, 'package', packageId, JSON.stringify({ fileName, recordCount: records.length, version: newVersion }), 'SUCCESS');
+
+    saveDatabase();
+
+    return { filePath, fileName };
+  } catch (error: any) {
+    await updatePackageStatus(packageId, 'FAILED', error.message, operator);
+    throw error;
+  } finally {
+    releaseOperationLock(packageId, 'generate', operator);
+  }
 }
 
 export async function downloadPackage(packageId: string, downloadedBy: string, ipAddress?: string): Promise<{ filePath: string; fileName: string }> {
@@ -753,6 +865,111 @@ export async function getPendingTasks(): Promise<PackageTask[]> {
     });
     return task as PackageTask;
   });
+}
+
+export async function recoverStaleTasks(): Promise<{ recoveredCount: number; details: string[] }> {
+  const db = getDatabase();
+  const now = new Date();
+  const staleThreshold = new Date(now.getTime() - 5 * 60 * 1000);
+  const details: string[] = [];
+
+  const staleTasks = db.exec(
+    `SELECT t.id, t.package_id, p.package_name, t.status 
+     FROM delivery_package_tasks t
+     JOIN delivery_packages p ON t.package_id = p.id
+     WHERE t.status = 'PROCESSING' 
+     AND (t.started_at IS NULL OR t.started_at < ?)`,
+    [staleThreshold.toISOString()]
+  );
+
+  let recoveredCount = 0;
+
+  if (staleTasks.length > 0 && staleTasks[0].values.length > 0) {
+    for (const row of staleTasks[0].values) {
+      const taskId = row[0] as string;
+      const packageId = row[1] as string;
+      const packageName = row[2] as string;
+      const currentStatus = row[3] as string;
+
+      if (currentStatus === 'PROCESSING') {
+        db.run(
+          `UPDATE delivery_packages SET status = 'FAILED', updated_at = ? WHERE id = ?`,
+          [now.toISOString(), packageId]
+        );
+
+        db.run(
+          `UPDATE delivery_package_tasks SET status = 'FAILED', error_message = ?, completed_at = ? WHERE id = ?`,
+          ['任务超时，服务重启后自动恢复', now.toISOString(), taskId]
+        );
+
+        await createAuditLog(
+          packageId,
+          'TASK_RECOVERY',
+          'SYSTEM',
+          'task',
+          taskId,
+          JSON.stringify({ reason: 'stale_task_recovery', previousStatus: currentStatus }),
+          'SUCCESS'
+        );
+
+        details.push(`恢复任务 ${packageName}: PROCESSING -> FAILED`);
+        recoveredCount++;
+      }
+    }
+
+    saveDatabase();
+  }
+
+  return { recoveredCount, details };
+}
+
+export async function recoverProcessingPackages(): Promise<{ recoveredCount: number; packageIds: string[] }> {
+  const db = getDatabase();
+  const now = new Date();
+
+  const processingPackages = db.exec(
+    `SELECT id, package_name FROM delivery_packages WHERE status = 'PROCESSING'`
+  );
+
+  const packageIds: string[] = [];
+
+  if (processingPackages.length > 0 && processingPackages[0].values.length > 0) {
+    for (const row of processingPackages[0].values) {
+      const packageId = row[0] as string;
+      const packageName = row[1] as string;
+
+      db.run(
+        `UPDATE delivery_packages SET status = 'FAILED', updated_at = ? WHERE id = ?`,
+        [now.toISOString(), packageId]
+      );
+
+      db.run(
+        `UPDATE delivery_package_tasks SET status = 'FAILED', error_message = ?, completed_at = ? WHERE package_id = ? AND status = 'PROCESSING'`,
+        ['服务重启中断，任务已自动标记为失败', now.toISOString(), packageId]
+      );
+
+      await createAuditLog(
+        packageId,
+        'PACKAGE_RECOVERY',
+        'SYSTEM',
+        'package',
+        packageId,
+        JSON.stringify({ reason: 'processing_package_recovery', packageName }),
+        'SUCCESS'
+      );
+
+      packageIds.push(packageId);
+    }
+
+    saveDatabase();
+  }
+
+  return { recoveredCount: packageIds.length, packageIds };
+}
+
+export function getOperationLockStatus(packageId: string): ConcurrencyLock | undefined {
+  const lockKey = `${packageId}:generate`;
+  return operationLocks.get(lockKey);
 }
 
 export async function updateTaskProgress(taskId: string, progress: number): Promise<void> {

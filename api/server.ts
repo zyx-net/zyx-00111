@@ -36,7 +36,10 @@ import {
   canDeletePackage,
   canDownloadPackage,
   canViewAuditLogs,
-  getAllDownloadRecords
+  getAllDownloadRecords,
+  recoverStaleTasks,
+  recoverProcessingPackages,
+  getOperationLockStatus
 } from './deliveryPackageService.js';
 
 const require = createRequire(import.meta.url);
@@ -807,7 +810,8 @@ app.post('/api/delivery-packages', async (req, res) => {
       taskId
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    console.error('创建交付包失败:', error);
+    res.status(500).json({ error: error.message || '创建交付包失败' });
   }
 });
 
@@ -1061,8 +1065,53 @@ app.get('/api/delivery-packages/:id/download', async (req, res) => {
       return res.status(401).json({ error: '用户不存在' });
     }
 
+    const { createAuditLog: createPkgAuditLog } = await import('./deliveryPackageService.js');
+
     if (!canDownloadPackage(user)) {
-      return res.status(403).json({ error: '您没有权限下载此交付包' });
+      await createPkgAuditLog(
+        req.params.id,
+        'UNAUTHORIZED_DOWNLOAD_ATTEMPT',
+        operator,
+        'package',
+        req.params.id,
+        JSON.stringify({ 
+          attemptedPackageId: req.params.id,
+          packageCreatedBy: pkg.createdBy,
+          reason: 'insufficient_permission'
+        }),
+        'FAILED'
+      );
+      saveDatabase();
+      
+      return res.status(403).json({ 
+        error: '您没有权限下载此交付包',
+        message: '越权访问已被记录',
+        auditLogged: true
+      });
+    }
+
+    if (user.role === 'REVIEWER' && pkg.createdBy !== operator) {
+      await createPkgAuditLog(
+        req.params.id,
+        'UNAUTHORIZED_DOWNLOAD_ATTEMPT',
+        operator,
+        'package',
+        req.params.id,
+        JSON.stringify({ 
+          attemptedPackageId: req.params.id,
+          packageCreatedBy: pkg.createdBy,
+          operator,
+          reason: 'reviewer_access_other_package'
+        }),
+        'FAILED'
+      );
+      saveDatabase();
+      
+      return res.status(403).json({ 
+        error: '您没有权限下载此交付包',
+        message: '复核员只能下载自己创建的交付包，越权访问已被记录',
+        auditLogged: true
+      });
     }
 
     const { filePath, fileName } = await downloadPackage(req.params.id, operator, req.ip);
@@ -1269,6 +1318,55 @@ app.get('/api/delivery-packages/downloads', async (req, res) => {
   }
 });
 
+app.get('/api/delivery-packages/:id/lock-status', async (req, res) => {
+  try {
+    const pkg = await getPackageById(req.params.id);
+    if (!pkg) {
+      return res.status(404).json({ error: '交付包不存在' });
+    }
+
+    const lockStatus = getOperationLockStatus(req.params.id);
+
+    res.json({
+      packageId: req.params.id,
+      locked: !!lockStatus,
+      lockInfo: lockStatus || null,
+      packageLocked: !!pkg.lockedBy,
+      packageLockedBy: pkg.lockedBy
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/delivery-packages/system/recovery', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'SUPERVISOR')) {
+      return res.status(403).json({ error: '只有管理员或主管可以执行系统恢复' });
+    }
+
+    const staleRecovery = await recoverStaleTasks();
+    const processingRecovery = await recoverProcessingPackages();
+
+    res.json({
+      success: true,
+      staleTasksRecovery: staleRecovery,
+      processingRecovery: processingRecovery,
+      totalRecovered: staleRecovery.recoveredCount + processingRecovery.recoveredCount,
+      recoveredAt: new Date().toISOString()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Server error:', err);
   res.status(500).json({ error: err.message || '服务器错误' });
@@ -1277,6 +1375,13 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 async function startServer() {
   try {
     await initDatabase();
+    
+    const { recoverProcessingPackages } = await import('./deliveryPackageService.js');
+    const recoveryResult = await recoverProcessingPackages();
+    if (recoveryResult.recoveredCount > 0) {
+      console.log(`[启动恢复] 检测到 ${recoveryResult.recoveredCount} 个中断的交付包任务，已自动处理`);
+    }
+    
     app.listen(PORT, () => {
       console.log(`Server is running on http://localhost:${PORT}`);
     });
