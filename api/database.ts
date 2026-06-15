@@ -47,6 +47,7 @@ function migrateDatabaseSchema(database: Database) {
   }
   
   migrateDeliveryPackageTables(database);
+  migrateChangeCenterTables(database);
 }
 
 function migrateDeliveryPackageTables(database: Database) {
@@ -402,6 +403,8 @@ function createTables(database: Database) {
 
   createDeliveryPackageTables(database);
 
+  migrateChangeCenterTables(database);
+
   database.run(`CREATE INDEX IF NOT EXISTS idx_meter_readings_meter_date ON meter_readings(meter_id, reading_date)`);
   database.run(`CREATE INDEX IF NOT EXISTS idx_meter_readings_batch ON meter_readings(batch_id)`);
   database.run(`CREATE INDEX IF NOT EXISTS idx_anomalies_status ON anomalies(status)`);
@@ -459,4 +462,281 @@ export function closeDatabase() {
     db.close();
     db = null;
   }
+}
+
+function migrateChangeCenterTables(database: Database) {
+  const tables = database.exec("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'change_%'");
+  
+  if (tables.length === 0) {
+    createChangeCenterTables(database);
+  } else {
+    const existingTables = tables[0].values.map(row => row[0]);
+    
+    if (!existingTables.includes('change_orders')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS change_orders (
+          id TEXT PRIMARY KEY,
+          order_no TEXT UNIQUE NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          order_type TEXT NOT NULL,
+          status TEXT DEFAULT 'DRAFT',
+          priority TEXT DEFAULT 'NORMAL',
+          dataset_id TEXT NOT NULL,
+          dataset_name TEXT NOT NULL,
+          field_changes TEXT NOT NULL,
+          effective_time TEXT NOT NULL,
+          approval_role TEXT DEFAULT 'ADMIN',
+          approver TEXT,
+          approved_at TEXT,
+          approval_comment TEXT,
+          rollback_description TEXT,
+          rollback_retention_days INTEGER DEFAULT 30,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          submitted_at TEXT,
+          execution_started_at TEXT,
+          execution_completed_at TEXT,
+          executed_by TEXT,
+          rollbacked_at TEXT,
+          rollbacked_by TEXT,
+          version INTEGER DEFAULT 1
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('change_order_audit_logs')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS change_order_audit_logs (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          operator TEXT NOT NULL,
+          details TEXT,
+          ip_address TEXT,
+          result TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('change_order_versions')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS change_order_versions (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          field_changes TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          change_summary TEXT,
+          is_active INTEGER DEFAULT 0,
+          FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('change_order_conflicts')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS change_order_conflicts (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          conflicting_order_id TEXT NOT NULL,
+          conflict_type TEXT NOT NULL,
+          conflict_time_window TEXT,
+          resolution TEXT,
+          resolved_by TEXT,
+          resolved_at TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE,
+          FOREIGN KEY (conflicting_order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('change_order_execution_history')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS change_order_execution_history (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          execution_type TEXT NOT NULL,
+          previous_value TEXT,
+          new_value TEXT NOT NULL,
+          execution_result TEXT,
+          error_message TEXT,
+          executed_by TEXT NOT NULL,
+          executed_at TEXT NOT NULL,
+          FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+        )
+      `);
+    }
+    
+    if (!existingTables.includes('change_order_config')) {
+      database.run(`
+        CREATE TABLE IF NOT EXISTS change_order_config (
+          id TEXT PRIMARY KEY,
+          config_key TEXT UNIQUE NOT NULL,
+          config_value TEXT NOT NULL,
+          config_type TEXT DEFAULT 'STRING',
+          description TEXT,
+          default_value TEXT,
+          valid_values TEXT,
+          updated_by TEXT,
+          updated_at TEXT NOT NULL
+        )
+      `);
+    }
+    
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_status ON change_orders(status)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_dataset ON change_orders(dataset_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_created_by ON change_orders(created_by)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_effective_time ON change_orders(effective_time)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_audit_order ON change_order_audit_logs(order_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_versions_order ON change_order_versions(order_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_conflicts_order ON change_order_conflicts(order_id)`);
+    database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_execution_order ON change_order_execution_history(order_id)`);
+    
+    insertDefaultChangeOrderConfig(database);
+    
+    saveDatabase();
+  }
+}
+
+function createChangeCenterTables(database: Database) {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS change_orders (
+      id TEXT PRIMARY KEY,
+      order_no TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      order_type TEXT NOT NULL,
+      status TEXT DEFAULT 'DRAFT',
+      priority TEXT DEFAULT 'NORMAL',
+      dataset_id TEXT NOT NULL,
+      dataset_name TEXT NOT NULL,
+      field_changes TEXT NOT NULL,
+      effective_time TEXT NOT NULL,
+      approval_role TEXT DEFAULT 'ADMIN',
+      approver TEXT,
+      approved_at TEXT,
+      approval_comment TEXT,
+      rollback_description TEXT,
+      rollback_retention_days INTEGER DEFAULT 30,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      submitted_at TEXT,
+      execution_started_at TEXT,
+      execution_completed_at TEXT,
+      executed_by TEXT,
+      rollbacked_at TEXT,
+      rollbacked_by TEXT,
+      version INTEGER DEFAULT 1
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS change_order_audit_logs (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      operator TEXT NOT NULL,
+      details TEXT,
+      ip_address TEXT,
+      result TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS change_order_versions (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      field_changes TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      change_summary TEXT,
+      is_active INTEGER DEFAULT 0,
+      FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS change_order_conflicts (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      conflicting_order_id TEXT NOT NULL,
+      conflict_type TEXT NOT NULL,
+      conflict_time_window TEXT,
+      resolution TEXT,
+      resolved_by TEXT,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (conflicting_order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS change_order_execution_history (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      execution_type TEXT NOT NULL,
+      previous_value TEXT,
+      new_value TEXT NOT NULL,
+      execution_result TEXT,
+      error_message TEXT,
+      executed_by TEXT NOT NULL,
+      executed_at TEXT NOT NULL,
+      FOREIGN KEY (order_id) REFERENCES change_orders(id) ON DELETE CASCADE
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS change_order_config (
+      id TEXT PRIMARY KEY,
+      config_key TEXT UNIQUE NOT NULL,
+      config_value TEXT NOT NULL,
+      config_type TEXT DEFAULT 'STRING',
+      description TEXT,
+      default_value TEXT,
+      valid_values TEXT,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_status ON change_orders(status)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_dataset ON change_orders(dataset_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_created_by ON change_orders(created_by)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_orders_effective_time ON change_orders(effective_time)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_audit_order ON change_order_audit_logs(order_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_versions_order ON change_order_versions(order_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_conflicts_order ON change_order_conflicts(order_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_change_order_execution_order ON change_order_execution_history(order_id)`);
+
+  insertDefaultChangeOrderConfig(database);
+}
+
+function insertDefaultChangeOrderConfig(database: Database) {
+  const now = new Date().toISOString();
+  const defaultConfigs = [
+    { key: 'approval_roles', value: 'ADMIN,SUPERVISOR', description: '可审批变更单的角色列表', defaultValue: 'ADMIN,SUPERVISOR', validValues: 'ADMIN,SUPERVISOR,REVIEWER' },
+    { key: 'conflict_time_window_hours', value: '24', description: '冲突检测时间窗口(小时)', defaultValue: '24', validValues: null },
+    { key: 'rollback_retention_days', value: '30', description: '回滚数据保留天数', defaultValue: '30', validValues: null },
+    { key: 'auto_conflict_check', value: 'true', description: '是否自动检测冲突', defaultValue: 'true', validValues: 'true,false' },
+    { key: 'require_rollback_description', value: 'true', description: '是否必须填写回滚说明', defaultValue: 'true', validValues: 'true,false' },
+    { key: 'max_effective_delay_hours', value: '168', description: '最大生效延迟时间(小时)', defaultValue: '168', validValues: null },
+  ];
+
+  defaultConfigs.forEach((config, index) => {
+    database.run(
+      `INSERT OR IGNORE INTO change_order_config (id, config_key, config_value, config_type, description, default_value, valid_values, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [`config_${index + 1}`, config.key, config.value, 'STRING', config.description, config.defaultValue, config.validValues, now]
+    );
+  });
 }

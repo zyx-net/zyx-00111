@@ -9,7 +9,7 @@ import { exportDetail, exportSummary, getExportRecords, exportBatchCompare, expo
 import { getUserByUsername, getAllUsers, canExportBatch, canRevertBatch, canViewAnomaly, canRevertAnomaly, createOperationLog, getOperationLogs } from './userService.js';
 import { compareBatches, getMeterTrajectory, createBatchSnapshot, getBatchSnapshot } from './batchCompareService.js';
 import { getAnomalyReplay, createRuleSnapshot } from './replayService.js';
-import { getDatabase } from './database.js';
+import { getDatabase, saveDatabase } from './database.js';
 import { MeterReading, AnomalyWithReading, MeterType, BatchRevertResult } from './types.js';
 import { createRequire } from 'module';
 import {
@@ -41,6 +41,42 @@ import {
   recoverProcessingPackages,
   getOperationLockStatus
 } from './deliveryPackageService.js';
+
+import {
+  createChangeOrder,
+  updateChangeOrder,
+  submitChangeOrder,
+  approveChangeOrder,
+  rejectChangeOrder,
+  executeChangeOrder,
+  withdrawChangeOrder,
+  rollbackChangeOrder,
+  checkConflicts,
+  getChangeOrders,
+  getChangeOrderById,
+  getChangeOrderByOrderNo,
+  getChangeOrderVersions,
+  getChangeOrderAuditLogs,
+  getChangeOrderExecutionHistory,
+  getChangeOrderConflicts,
+  getChangeOrderConfig,
+  getAllChangeOrderConfigs,
+  updateChangeOrderConfig,
+  canViewChangeOrder,
+  canModifyChangeOrder,
+  canApproveChangeOrder,
+  canExecuteChangeOrder,
+  canWithdrawChangeOrder,
+  canRollbackChangeOrder,
+  canDeleteChangeOrder,
+  canViewAuditLogs as canViewChangeOrderAuditLogs,
+  deleteChangeOrder,
+  recoverStaleChangeOrders,
+  recoverExecutingChangeOrders,
+  getPendingExecutionOrders,
+  exportChangeOrderSummary
+} from './changeOrderService.js';
+import { FieldChange, ChangeOrderStatus, ChangeOrderPriority } from './types.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1367,6 +1403,566 @@ app.get('/api/delivery-packages/system/recovery', async (req, res) => {
   }
 });
 
+app.post('/api/change-orders', async (req, res) => {
+  try {
+    const {
+      title, description, orderType, datasetId, datasetName,
+      fieldChanges, effectiveTime, createdBy, priority,
+      rollbackDescription, rollbackRetentionDays
+    } = req.body;
+
+    if (!title || !orderType || !datasetId || !datasetName || !fieldChanges || !effectiveTime || !createdBy) {
+      return res.status(400).json({ error: '缺少必要的参数' });
+    }
+
+    const user = await getUserByUsername(createdBy);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    const order = await createChangeOrder(
+      title, orderType, datasetId, datasetName,
+      fieldChanges, effectiveTime, createdBy,
+      description, priority, rollbackDescription, rollbackRetentionDays
+    );
+
+    res.json({ success: true, order });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || '创建变更单失败' });
+  }
+});
+
+app.get('/api/change-orders', async (req, res) => {
+  try {
+    const { status, datasetId, createdBy, priority, fromDate, toDate, operator } = req.query as any;
+
+    const filters: any = {};
+    if (status) filters.status = status;
+    if (datasetId) filters.datasetId = datasetId;
+    if (createdBy) filters.createdBy = createdBy;
+    if (priority) filters.priority = priority;
+    if (fromDate) filters.fromDate = fromDate;
+    if (toDate) filters.toDate = toDate;
+    if (operator) filters.operator = operator;
+
+    const orders = await getChangeOrders(filters);
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      const filteredOrders = orders.filter(order => canViewChangeOrder(user, order.createdBy));
+      return res.json(filteredOrders);
+    }
+
+    res.json(orders);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/config', async (req, res) => {
+  try {
+    const configs = await getAllChangeOrderConfigs();
+    res.json(configs);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/config/:key', async (req, res) => {
+  try {
+    const config = await getChangeOrderConfig(req.params.key);
+
+    if (!config) {
+      return res.status(404).json({ error: '配置项不存在' });
+    }
+
+    res.json(config);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/change-orders/config/:key', async (req, res) => {
+  try {
+    const { value, operator } = req.body;
+
+    if (!value || !operator) {
+      return res.status(400).json({ error: '缺少必要的参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user || user.role !== 'ADMIN') {
+      return res.status(403).json({ error: '只有管理员可以修改配置' });
+    }
+
+    const updatedConfig = await updateChangeOrderConfig(req.params.key, value, operator);
+    res.json({ success: true, config: updatedConfig });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '更新配置失败' });
+  }
+});
+
+app.get('/api/change-orders/:id', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewChangeOrder(user, order.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此变更单' });
+      }
+    }
+
+    res.json(order);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/number/:orderNo', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+    const order = await getChangeOrderByOrderNo(req.params.orderNo);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewChangeOrder(user, order.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此变更单' });
+      }
+    }
+
+    res.json(order);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/change-orders/:id', async (req, res) => {
+  try {
+    const { operator, ...updates } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canModifyChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限修改此变更单' });
+    }
+
+    const updatedOrder = await updateChangeOrder(req.params.id, updates, operator);
+    res.json({ success: true, order: updatedOrder });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || '更新变更单失败' });
+  }
+});
+
+app.post('/api/change-orders/:id/submit', async (req, res) => {
+  try {
+    const { operator } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canModifyChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限提交此变更单' });
+    }
+
+    const submittedOrder = await submitChangeOrder(req.params.id, operator);
+    res.json({ success: true, order: submittedOrder });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '提交变更单失败' });
+  }
+});
+
+app.post('/api/change-orders/:id/approve', async (req, res) => {
+  try {
+    const { operator, comment } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canApproveChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限审批此变更单' });
+    }
+
+    const approvedOrder = await approveChangeOrder(req.params.id, operator, comment);
+    res.json({ success: true, order: approvedOrder });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '审批变更单失败' });
+  }
+});
+
+app.post('/api/change-orders/:id/reject', async (req, res) => {
+  try {
+    const { operator, comment } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canApproveChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限驳回此变更单' });
+    }
+
+    const rejectedOrder = await rejectChangeOrder(req.params.id, operator, comment);
+    res.json({ success: true, order: rejectedOrder });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '驳回变更单失败' });
+  }
+});
+
+app.post('/api/change-orders/:id/execute', async (req, res) => {
+  try {
+    const { operator } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canExecuteChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限执行此变更单' });
+    }
+
+    const executedOrder = await executeChangeOrder(req.params.id, operator);
+    res.json({ success: true, order: executedOrder });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '执行变更单失败' });
+  }
+});
+
+app.post('/api/change-orders/:id/withdraw', async (req, res) => {
+  try {
+    const { operator, reason } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canWithdrawChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限撤回此变更单' });
+    }
+
+    const withdrawnOrder = await withdrawChangeOrder(req.params.id, operator, reason);
+    res.json({ success: true, order: withdrawnOrder });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '撤回变更单失败' });
+  }
+});
+
+app.post('/api/change-orders/:id/rollback', async (req, res) => {
+  try {
+    const { operator, reason } = req.body;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canRollbackChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限回滚此变更单' });
+    }
+
+    const rolledBackOrder = await rollbackChangeOrder(req.params.id, operator, reason);
+    res.json({ success: true, order: rolledBackOrder });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || '回滚变更单失败' });
+  }
+});
+
+app.delete('/api/change-orders/:id', async (req, res) => {
+  try {
+    const { operator } = req.body as any;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canDeleteChangeOrder(user, order)) {
+      return res.status(403).json({ error: '您没有权限删除此变更单' });
+    }
+
+    await deleteChangeOrder(req.params.id, operator);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || '删除变更单失败' });
+  }
+});
+
+app.get('/api/change-orders/:id/versions', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewChangeOrder(user, order.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此变更单的版本历史' });
+      }
+    }
+
+    const versions = await getChangeOrderVersions(req.params.id);
+    res.json(versions);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/:id/audit-logs', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canViewChangeOrderAuditLogs(user)) {
+      return res.status(403).json({ error: '您没有权限查看审计日志' });
+    }
+
+    const logs = await getChangeOrderAuditLogs(req.params.id);
+    res.json(logs);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/:id/execution-history', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewChangeOrder(user, order.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此变更单的执行历史' });
+      }
+    }
+
+    const history = await getChangeOrderExecutionHistory(req.params.id);
+    res.json(history);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/:id/conflicts', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+    const order = await getChangeOrderById(req.params.id);
+
+    if (!order) {
+      return res.status(404).json({ error: '变更单不存在' });
+    }
+
+    if (operator) {
+      const user = await getUserByUsername(operator);
+      if (!user) {
+        return res.status(401).json({ error: '用户不存在' });
+      }
+
+      if (!canViewChangeOrder(user, order.createdBy)) {
+        return res.status(403).json({ error: '您没有权限查看此变更单的冲突信息' });
+      }
+    }
+
+    const conflicts = await getChangeOrderConflicts(req.params.id);
+    res.json(conflicts);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/change-orders/check-conflicts', async (req, res) => {
+  try {
+    const { orderId, datasetId, effectiveTime } = req.body;
+
+    if (!datasetId || !effectiveTime) {
+      return res.status(400).json({ error: '缺少必要的参数' });
+    }
+
+    const result = await checkConflicts(orderId || 'NEW', datasetId, effectiveTime);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/pending-execution', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    const orders = await getPendingExecutionOrders();
+
+    if (user.role === 'ADMIN' || user.role === 'SUPERVISOR') {
+      return res.json(orders);
+    }
+
+    const filteredOrders = orders.filter(order => canViewChangeOrder(user, order.createdBy));
+    res.json(filteredOrders);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/change-orders/system/recovery', async (req, res) => {
+  try {
+    const { operator } = req.query as any;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'SUPERVISOR')) {
+      return res.status(403).json({ error: '只有管理员或主管可以执行系统恢复' });
+    }
+
+    const staleRecovery = await recoverStaleChangeOrders();
+    const executingRecovery = await recoverExecutingChangeOrders();
+
+    res.json({
+      success: true,
+      staleRecovery: staleRecovery,
+      executingRecovery: executingRecovery,
+      totalRecovered: staleRecovery.recoveredCount + executingRecovery.recoveredCount,
+      recoveredAt: new Date().toISOString()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/change-orders/export-summary', async (req, res) => {
+  try {
+    const { operator } = req.body;
+
+    if (!operator) {
+      return res.status(400).json({ error: '缺少操作人参数' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user) {
+      return res.status(401).json({ error: '用户不存在' });
+    }
+
+    if (!canViewChangeOrderAuditLogs(user)) {
+      return res.status(403).json({ error: '您没有权限导出变更单摘要' });
+    }
+
+    const result = await exportChangeOrderSummary(operator);
+
+    res.json({
+      success: true,
+      filePath: result.filePath,
+      fileName: result.filePath.split('/').pop(),
+      orderCount: result.orderCount,
+      downloadUrl: `/api/download/${result.filePath.split('/').pop()}`
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || '导出失败' });
+  }
+});
+
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Server error:', err);
   res.status(500).json({ error: err.message || '服务器错误' });
@@ -1377,9 +1973,16 @@ async function startServer() {
     await initDatabase();
     
     const { recoverProcessingPackages } = await import('./deliveryPackageService.js');
-    const recoveryResult = await recoverProcessingPackages();
-    if (recoveryResult.recoveredCount > 0) {
-      console.log(`[启动恢复] 检测到 ${recoveryResult.recoveredCount} 个中断的交付包任务，已自动处理`);
+    const deliveryRecoveryResult = await recoverProcessingPackages();
+    if (deliveryRecoveryResult.recoveredCount > 0) {
+      console.log(`[启动恢复] 检测到 ${deliveryRecoveryResult.recoveredCount} 个中断的交付包任务，已自动处理`);
+    }
+    
+    const { recoverStaleChangeOrders, recoverExecutingChangeOrders } = await import('./changeOrderService.js');
+    const staleRecovery = await recoverStaleChangeOrders();
+    const executingRecovery = await recoverExecutingChangeOrders();
+    if (staleRecovery.recoveredCount > 0 || executingRecovery.recoveredCount > 0) {
+      console.log(`[启动恢复] 检测到 ${staleRecovery.recoveredCount} 个待执行和 ${executingRecovery.recoveredCount} 个执行中的变更单，已自动处理`);
     }
     
     app.listen(PORT, () => {

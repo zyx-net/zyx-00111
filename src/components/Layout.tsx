@@ -1,6 +1,6 @@
 import { ReactNode } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { LayoutDashboard, Upload, AlertTriangle, Settings, FileDown, Package } from 'lucide-react';
+import { LayoutDashboard, Upload, AlertTriangle, Settings, FileDown, Package, GitBranch } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const navItems = [
@@ -10,6 +10,7 @@ const navItems = [
   { to: '/config', icon: Settings, label: '规则配置' },
   { to: '/export', icon: FileDown, label: '导出中心' },
   { to: '/delivery', icon: Package, label: '离线交付包' },
+  { to: '/change-center', icon: GitBranch, label: '数据口径变更' },
 ];
 
 export function Layout({ children }: { children?: ReactNode }) {

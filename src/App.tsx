@@ -6,6 +6,7 @@ import { Review } from "./pages/Review";
 import { Config } from "./pages/Config";
 import { Export } from "./pages/Export";
 import { Delivery } from "./pages/Delivery";
+import { ChangeCenter } from "./pages/ChangeCenter";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/config" element={<Config />} />
           <Route path="/export" element={<Export />} />
           <Route path="/delivery" element={<Delivery />} />
+          <Route path="/change-center" element={<ChangeCenter />} />
         </Routes>
       </Layout>
     </Router>
