@@ -67,9 +67,13 @@ export async function exportDetail(params: {
   dateTo?: string;
   meterType?: string;
   batchId?: string;
+  status?: string;
+  type?: string;
 }, downloadedBy?: string): Promise<{ filePath: string; record: ExportRecord }> {
   const db = getDatabase();
   const now = new Date().toISOString();
+
+  const hasAnomalyFilter = params.status || params.type;
 
   let query = `
     SELECT
@@ -84,8 +88,16 @@ export async function exportDetail(params: {
       a.status as anomaly_status,
       a.remark
     FROM meter_readings mr
+  `;
+
+  if (hasAnomalyFilter) {
+    query += ` INNER JOIN anomalies a ON mr.id = a.reading_id`;
+  } else {
+    query += ` LEFT JOIN anomalies a ON mr.id = a.reading_id`;
+  }
+
+  query += `
     LEFT JOIN batches b ON mr.batch_id = b.id
-    LEFT JOIN anomalies a ON mr.id = a.reading_id
     WHERE 1=1
   `;
 
@@ -109,6 +121,16 @@ export async function exportDetail(params: {
   if (params.batchId) {
     query += ` AND mr.batch_id = ?`;
     queryParams.push(params.batchId);
+  }
+
+  if (params.status) {
+    query += ` AND a.status = ?`;
+    queryParams.push(params.status);
+  }
+
+  if (params.type) {
+    query += ` AND a.anomaly_type = ?`;
+    queryParams.push(params.type);
   }
 
   query += ` ORDER BY mr.reading_date DESC, mr.meter_id`;

@@ -56,6 +56,9 @@ node test-missing-detection.cjs
 
 # CSV导出功能验证测试
 node test-csv-export.cjs
+
+# 筛选导出数据范围验证测试
+node test-filter-export.cjs
 ```
 
 ## 项目结构

@@ -18,8 +18,10 @@ export async function initDatabase(): Promise<Database> {
   if (existsSync(DB_PATH)) {
     const fileBuffer = readFileSync(DB_PATH);
     db = new SQL.Database(fileBuffer);
+    db.run('PRAGMA foreign_keys = ON');
   } else {
     db = new SQL.Database();
+    db.run('PRAGMA foreign_keys = ON');
     createTables(db);
     insertDefaultRules(db);
     saveDatabase();
@@ -53,7 +55,7 @@ function createTables(database: Database) {
       version INTEGER DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (batch_id) REFERENCES batches(id)
+      FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
     )
   `);
 
@@ -68,7 +70,7 @@ function createTables(database: Database) {
       resolved_by TEXT,
       remark TEXT,
       rule_snapshot TEXT,
-      FOREIGN KEY (reading_id) REFERENCES meter_readings(id)
+      FOREIGN KEY (reading_id) REFERENCES meter_readings(id) ON DELETE CASCADE
     )
   `);
 
@@ -83,7 +85,7 @@ function createTables(database: Database) {
       version INTEGER NOT NULL,
       reading_id TEXT,
       rule_snapshot TEXT,
-      FOREIGN KEY (anomaly_id) REFERENCES anomalies(id)
+      FOREIGN KEY (anomaly_id) REFERENCES anomalies(id) ON DELETE CASCADE
     )
   `);
 
@@ -139,7 +141,7 @@ function createTables(database: Database) {
       anomaly_count INTEGER DEFAULT 0,
       status_summary TEXT,
       created_at TEXT NOT NULL,
-      FOREIGN KEY (batch_id) REFERENCES batches(id)
+      FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE CASCADE
     )
   `);
 

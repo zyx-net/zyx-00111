@@ -63,12 +63,13 @@ function downloadFile(filePath) {
 
 function parseCSV(content) {
   const str = content.toString('utf-8');
-  const lines = str.split(/\r?\n/);
+  const cleanStr = str.replace(/^\ufeff/, '').trim();
+  if (!cleanStr) return [];
+
+  const lines = cleanStr.split(/\r?\n/).filter(line => line.trim());
   const result = [];
 
   for (const line of lines) {
-    if (!line.trim()) continue;
-
     const values = [];
     let current = '';
     let inQuotes = false;
