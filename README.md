@@ -8,7 +8,7 @@
 - **异常识别**：自动检测跳变、缺失、回退等异常
 - **复核修正**：支持修正、忽略、撤销操作，保留完整历史记录
 - **规则配置**：阈值配置支持版本管理，可回滚到历史版本
-- **数据导出**：支持明细导出和汇总报表导出
+- **数据导出**：支持明细导出和汇总报表导出（CSV格式）
 - **冲突检测**：多用户并发操作时版本冲突检测
 - **数据持久化**：SQLite本地存储，系统重启后数据一致
 
@@ -53,6 +53,9 @@ node test-review-flow.cjs
 
 # 跨天缺失检测专项测试
 node test-missing-detection.cjs
+
+# CSV导出功能验证测试
+node test-csv-export.cjs
 ```
 
 ## 项目结构
@@ -236,8 +239,11 @@ node test-missing-detection.cjs
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /api/export/detail | 导出明细 |
-| POST | /api/export/summary | 导出汇总 |
+| POST | /api/export/detail | 导出明细（CSV） |
+| POST | /api/export/summary | 导出汇总（CSV） |
+| POST | /api/export/batch-compare | 导出批次对比（CSV） |
+| POST | /api/export/replay | 导出异常回放（CSV） |
+| POST | /api/export/filtered | 导出筛选结果（CSV，仅主管） |
 | GET | /api/exports | 获取导出记录 |
 
 ## 样例数据
@@ -283,9 +289,54 @@ node test-missing-detection.cjs
 ## 注意事项
 
 1. **数据持久化**：所有数据存储在`data/energy_review.db`文件中，请勿删除
-2. **导出文件**：导出的Excel文件保存在`exports/`目录
+2. **导出文件**：导出的CSV文件保存在`exports/`目录，使用UTF-8编码
 3. **并发操作**：系统使用版本号进行乐观锁，请避免同时修改同一记录
 4. **规则生效**：规则修改仅影响后续导入的数据，不影响历史数据
+
+## CSV导出验收指南
+
+### 验收标准
+
+1. **文件格式**：所有导出文件必须是 `.csv` 格式，不是 `.xlsx`
+2. **编码**：文件使用 UTF-8 编码，中文字符能正确显示
+3. **字段**：CSV包含正确的表头和字段顺序
+4. **响应**：API返回JSON包含`filePath`字段
+
+### 验收步骤
+
+#### 1. 启动服务验证
+```bash
+npm run dev
+```
+**预期**：前端运行在 http://localhost:5173，后端运行在 http://localhost:3001
+
+#### 2. CSV导出格式验证
+```bash
+node test-csv-export.cjs
+```
+**预期**：20项测试全部通过
+
+#### 3. 关键验证点
+- [ ] 导出文件扩展名是 `.csv` 不是 `.xlsx`
+- [ ] 文件可以用Excel或文本编辑器打开
+- [ ] 中文内容显示正常（不是乱码）
+- [ ] CSV有正确的表头行
+- [ ] 数据行与筛选条件一致
+
+#### 4. 完整回归测试
+```bash
+node test-review-flow.cjs
+```
+**预期**：31项测试全部通过
+
+### 常见问题排查
+
+| 问题 | 可能原因 | 解决方案 |
+|------|---------|---------|
+| `npm run dev` 报模块不存在 | tsx模块路径问题 | 使用 `npx tsx` 替代直接调用 |
+| 导出是Excel不是CSV | exportService.ts 使用了 xlsx 库 | 已修改为生成CSV格式 |
+| 文件名乱码 | 未使用UTF-8 BOM | 已添加 `\ufeff` BOM头 |
+| 字段顺序不对 | 导出逻辑问题 | 已修复字段映射 |
 
 ## License
 
