@@ -73,6 +73,102 @@ function getDetectionRules(): DetectionRule[] {
   return rules;
 }
 
+export async function detectMissingReadings(): Promise<Array<{ meterId: string; meterType: string; lastReadingDate: string; daysMissing: number }>> {
+  const db = getDatabase();
+
+  const missingDaysResult = db.exec(`SELECT config_value FROM rule_configs WHERE config_key = 'missingDays' AND effective_to IS NULL ORDER BY version DESC LIMIT 1`);
+  const missingDays = missingDaysResult[0]?.values[0]?.[0] ? Number(missingDaysResult[0].values[0][0]) : 3;
+
+  const today = new Date();
+  const cutoffDate = new Date(today);
+  cutoffDate.setDate(cutoffDate.getDate() - missingDays);
+  const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+
+  const metersResult = db.exec(`
+    SELECT DISTINCT meter_id, meter_type 
+    FROM meter_readings
+  `);
+
+  if (metersResult.length === 0) return [];
+
+  const missingMeters: Array<{ meterId: string; meterType: string; lastReadingDate: string; daysMissing: number }> = [];
+
+  for (const row of metersResult[0].values) {
+    const meterId = row[0] as string;
+    const meterType = row[1] as string;
+
+    const lastReadingResult = db.exec(`
+      SELECT MAX(reading_date) as last_date
+      FROM meter_readings
+      WHERE meter_id = ?
+    `, [meterId]);
+
+    if (lastReadingResult.length > 0 && lastReadingResult[0].values.length > 0) {
+      const lastDate = lastReadingResult[0].values[0][0] as string;
+      const lastDateObj = new Date(lastDate);
+      const daysDiff = Math.floor((today.getTime() - lastDateObj.getTime()) / (1000 * 60 * 60 * 24));
+
+      if (daysDiff >= missingDays) {
+        const existingMissingAnomaly = db.exec(`
+          SELECT a.id FROM anomalies a
+          JOIN meter_readings mr ON a.reading_id = mr.id
+          WHERE mr.meter_id = ? AND a.anomaly_type = 'MISSING' AND a.status = 'PENDING'
+        `, [meterId]);
+
+        if (existingMissingAnomaly.length === 0 || existingMissingAnomaly[0].values.length === 0) {
+          missingMeters.push({
+            meterId,
+            meterType,
+            lastReadingDate: lastDate,
+            daysMissing: daysDiff
+          });
+        }
+      }
+    }
+  }
+
+  return missingMeters;
+}
+
+export async function createMissingAnomalies(): Promise<Anomaly[]> {
+  const db = getDatabase();
+  const missingMeters = await detectMissingReadings();
+  const anomalies: Anomaly[] = [];
+  const now = new Date().toISOString();
+
+  for (const meter of missingMeters) {
+    const lastReadingResult = db.exec(`
+      SELECT id FROM meter_readings
+      WHERE meter_id = ? AND reading_date = ?
+    `, [meter.meterId, meter.lastReadingDate]);
+
+    if (lastReadingResult.length > 0 && lastReadingResult[0].values.length > 0) {
+      const readingId = lastReadingResult[0].values[0][0] as string;
+
+      const anomalyId = uuidv4();
+      db.run(
+        `INSERT INTO anomalies (id, reading_id, anomaly_type, detected_at, status, remark) VALUES (?, ?, ?, ?, ?, ?)`,
+        [anomalyId, readingId, 'MISSING', now, 'PENDING', `已超过 ${meter.daysMissing} 天无读数`]
+      );
+
+      anomalies.push({
+        id: anomalyId,
+        readingId,
+        anomalyType: 'MISSING',
+        detectedAt: now,
+        status: 'PENDING',
+        remark: `已超过 ${meter.daysMissing} 天无读数`
+      });
+    }
+  }
+
+  if (anomalies.length > 0) {
+    saveDatabase();
+  }
+
+  return anomalies;
+}
+
 async function getPreviousReading(meterId: string, currentDate: string): Promise<MeterReading | undefined> {
   const db = getDatabase();
   const results = db.exec(
@@ -224,12 +320,28 @@ export async function revertAnomaly(anomalyId: string): Promise<{ success: boole
     return { success: false, message: '异常记录不存在' };
   }
 
-  const anomaly = anomalyResult[0].values[0];
-  const anomalyStatus = anomalyResult[0].columns.indexOf('status');
-  const readingIdIndex = anomalyResult[0].columns.indexOf('reading_id');
+  const columns = anomalyResult[0].columns;
+  const row = anomalyResult[0].values[0];
+  const anomaly: any = {};
+  columns.forEach((col, i) => { anomaly[col] = row[i]; });
 
-  if (anomaly[anomalyStatus] !== 'CORRECTED' && anomaly[anomalyStatus] !== 'IGNORED') {
+  if (anomaly.status !== 'CORRECTED' && anomaly.status !== 'IGNORED') {
     return { success: false, message: '只有已修正或已忽略的异常可以撤销' };
+  }
+
+  const readingId = anomaly.reading_id;
+
+  const correctionResult = db.exec(
+    `SELECT * FROM corrections WHERE anomaly_id = ? ORDER BY operated_at DESC LIMIT 1`,
+    [anomalyId]
+  );
+
+  let previousValue: number | null = null;
+  if (correctionResult.length > 0 && correctionResult[0].values.length > 0) {
+    const correctionRow = correctionResult[0].values[0];
+    const correctionColumns = correctionResult[0].columns;
+    const originalValueIdx = correctionColumns.indexOf('original_value');
+    previousValue = correctionRow[originalValueIdx] as number;
   }
 
   db.run(
@@ -237,10 +349,17 @@ export async function revertAnomaly(anomalyId: string): Promise<{ success: boole
     [anomalyId]
   );
 
-  db.run(
-    `UPDATE meter_readings SET status = 'ABNORMAL', updated_at = ? WHERE id = ?`,
-    [now, anomaly[readingIdIndex]]
-  );
+  if (anomaly.status === 'CORRECTED') {
+    db.run(
+      `UPDATE meter_readings SET status = 'ABNORMAL', corrected_value = NULL, updated_at = ? WHERE id = ?`,
+      [now, readingId]
+    );
+  } else {
+    db.run(
+      `UPDATE meter_readings SET status = 'ABNORMAL', updated_at = ? WHERE id = ?`,
+      [now, readingId]
+    );
+  }
 
   saveDatabase();
   return { success: true, message: '撤销成功' };

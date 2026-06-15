@@ -171,10 +171,16 @@ export async function exportSummary(params: {
     let query = `
       SELECT 
         COUNT(*) as count,
-        SUM(raw_value) as total_raw,
-        SUM(corrected_value) as total_corrected
-      FROM meter_readings
-      WHERE meter_type = ?
+        SUM(mr.raw_value) as total_raw,
+        SUM(
+          CASE 
+            WHEN a.status = 'CORRECTED' AND mr.corrected_value IS NOT NULL THEN mr.corrected_value
+            ELSE mr.raw_value
+          END
+        ) as total_effective
+      FROM meter_readings mr
+      LEFT JOIN anomalies a ON mr.id = a.reading_id
+      WHERE mr.meter_type = ?
     `;
     const queryParams: any[] = [type];
 
@@ -193,7 +199,7 @@ export async function exportSummary(params: {
       const row = results[0].values[0];
       const count = Number(row[0]) || 0;
       const totalRaw = Number(row[1]) || 0;
-      const totalCorrected = Number(row[2]) || 0;
+      const totalEffective = Number(row[2]) || 0;
 
       summary.totalCount += count;
       summary.totalRawValue += totalRaw;
@@ -223,7 +229,7 @@ export async function exportSummary(params: {
         type: meterTypeNames[type],
         count,
         totalRaw,
-        totalCorrected,
+        totalEffective,
         anomalyCount,
         anomalyRate: count > 0 ? ((Number(anomalyCount) / count) * 100).toFixed(2) + '%' : '0%'
       });

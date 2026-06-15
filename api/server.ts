@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { initDatabase, closeDatabase } from './database.js';
 import { importBatch, getBatches, getBatchById, getReadingsByBatchId, deleteBatch, checkDuplicateReadings, updateBatchAnomalyCount } from './batchService.js';
-import { detectAnomalies, createAnomalyRecords, getAnomalies, getAnomalyById, ignoreAnomaly, revertAnomaly } from './anomalyService.js';
+import { detectAnomalies, createAnomalyRecords, getAnomalies, getAnomalyById, ignoreAnomaly, revertAnomaly, createMissingAnomalies, detectMissingReadings } from './anomalyService.js';
 import { correctAnomaly, getCorrectionHistory } from './correctionService.js';
 import { getCurrentRules, updateRules, getRuleHistory, rollbackToVersion } from './ruleService.js';
 import { exportDetail, exportSummary, getExportRecords } from './exportService.js';
@@ -48,6 +48,7 @@ app.post('/api/batches', async (req, res) => {
     const readingsResult = await getReadingsByBatchId(batch.id);
     const detectionResults = await detectAnomalies(readingsResult);
     await createAnomalyRecords(detectionResults);
+    await createMissingAnomalies();
     await updateBatchAnomalyCount(batch.id);
 
     const updatedBatch = await getBatchById(batch.id);
@@ -110,6 +111,19 @@ app.get('/api/anomalies', async (req, res) => {
       type: type as any
     });
     res.json(anomalies);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/anomalies/detect-missing', async (req, res) => {
+  try {
+    const anomalies = await createMissingAnomalies();
+    res.json({ 
+      success: true, 
+      count: anomalies.length,
+      anomalies 
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
