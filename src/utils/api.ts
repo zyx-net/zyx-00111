@@ -146,13 +146,13 @@ export const api = {
   },
 
   export: {
-    detail: (params: { dateFrom?: string; dateTo?: string; meterType?: string; batchId?: string }) =>
-      fetchApi<{ filePath: string; record: ExportRecord }>('/export/detail', {
+    detail: (params: { dateFrom?: string; dateTo?: string; meterType?: string; batchId?: string; operator?: string }) =>
+      fetchApi<{ filePath: string; record: ExportRecord; recordCount?: number; success?: boolean; error?: string; message?: string }>('/export/detail', {
         method: 'POST',
         body: JSON.stringify(params),
       }),
 
-    summary: (params: { dateFrom?: string; dateTo?: string }) =>
+    summary: (params: { dateFrom?: string; dateTo?: string; operator?: string }) =>
       fetchApi<{ filePath: string; record: ExportRecord; summary: any }>('/export/summary', {
         method: 'POST',
         body: JSON.stringify(params),

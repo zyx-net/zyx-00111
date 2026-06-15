@@ -264,10 +264,24 @@ app.post('/api/rules/:version/rollback', async (req, res) => {
 app.post('/api/export/detail', async (req, res) => {
   try {
     const params = req.body;
-    const result = await exportDetail(params);
+    const operator = params.operator || 'system';
+    const result = await exportDetail(params, operator);
+
+    if (result.recordCount === 0) {
+      return res.status(200).json({
+        success: false,
+        error: '没有符合条件的数据',
+        message: '当前筛选条件下没有可导出的数据，请调整筛选条件后重试',
+        recordCount: 0
+      });
+    }
+
+    await createOperationLog(operator, 'EXPORT', 'detail', undefined, JSON.stringify(params));
+
     res.json({
       filePath: result.filePath,
-      record: result.record
+      record: result.record,
+      recordCount: result.recordCount
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -277,7 +291,11 @@ app.post('/api/export/detail', async (req, res) => {
 app.post('/api/export/summary', async (req, res) => {
   try {
     const params = req.body;
-    const result = await exportSummary(params);
+    const operator = params.operator || 'system';
+    const result = await exportSummary(params, operator);
+
+    await createOperationLog(operator, 'EXPORT', 'summary', undefined, JSON.stringify(params));
+
     res.json({
       filePath: result.filePath,
       record: result.record,
@@ -576,6 +594,16 @@ app.post('/api/export/filtered', async (req, res) => {
     }
 
     const anomalies = await getAnomalies(filters);
+
+    if (anomalies.length === 0) {
+      return res.status(200).json({
+        success: false,
+        error: '没有符合条件的数据',
+        message: '当前筛选条件下没有可导出的异常记录，请调整筛选条件后重试',
+        recordCount: 0
+      });
+    }
+
     const exportResult = await exportDetail({ ...filters, exportType: 'FILTERED' }, operator);
 
     await createOperationLog(operator, 'EXPORT', 'filtered_anomalies', undefined, JSON.stringify(filters));
@@ -583,7 +611,7 @@ app.post('/api/export/filtered', async (req, res) => {
     res.json({
       filePath: exportResult.filePath,
       record: exportResult.record,
-      count: anomalies.length
+      recordCount: anomalies.length
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

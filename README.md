@@ -59,6 +59,9 @@ node test-csv-export.cjs
 
 # 筛选导出数据范围验证测试
 node test-filter-export.cjs
+
+# 导出功能完整性测试（0条处理、操作日志、权限隔离）
+node test-export-complete.cjs
 ```
 
 ## 项目结构

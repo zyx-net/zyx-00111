@@ -1,49 +1,98 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../utils/api';
+import { useStore } from '../store';
 import { FileDown, FileText, BarChart3, Download, Calendar } from 'lucide-react';
 
 export function Export() {
+  const currentOperator = useStore(state => state.currentOperator);
   const [exportType, setExportType] = useState<'detail' | 'summary'>('detail');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [meterType, setMeterType] = useState('');
+  const [dateFrom, setDateFrom] = useState(() => {
+    const saved = localStorage.getItem('export_dateFrom');
+    return saved || '';
+  });
+  const [dateTo, setDateTo] = useState(() => {
+    const saved = localStorage.getItem('export_dateTo');
+    return saved || '';
+  });
+  const [meterType, setMeterType] = useState(() => {
+    const saved = localStorage.getItem('export_meterType');
+    return saved || '';
+  });
   const [loading, setLoading] = useState(false);
   const [exportHistory, setExportHistory] = useState<any[]>([]);
   const [lastSummary, setLastSummary] = useState<any>(null);
+  const [exportMessage, setExportMessage] = useState<{type: 'success' | 'warning' | 'error', text: string} | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('export_dateFrom', dateFrom);
+  }, [dateFrom]);
+
+  useEffect(() => {
+    localStorage.setItem('export_dateTo', dateTo);
+  }, [dateTo]);
+
+  useEffect(() => {
+    localStorage.setItem('export_meterType', meterType);
+  }, [meterType]);
 
   const handleExport = async () => {
     setLoading(true);
+    setExportMessage(null);
     try {
-      const params: any = {};
+      const params: any = {
+        operator: currentOperator
+      };
       if (dateFrom) params.dateFrom = dateFrom;
       if (dateTo) params.dateTo = dateTo;
       if (meterType) params.meterType = meterType;
 
       if (exportType === 'detail') {
         const result = await api.export.detail(params);
+
+        if (result.success === false) {
+          setExportMessage({
+            type: 'warning',
+            text: result.message || '没有符合条件的数据'
+          });
+          return;
+        }
+
         const baseUrl = window.location.origin;
         const link = document.createElement('a');
         link.href = `${baseUrl}${result.filePath}`;
-        link.download = result.filePath.split('/').pop() || 'export.xlsx';
+        link.download = result.filePath.split('/').pop() || 'energy_detail.csv';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+
+        setExportMessage({
+          type: 'success',
+          text: `导出成功，共 ${result.recordCount} 条记录`
+        });
       } else {
         const result = await api.export.summary(params);
         setLastSummary(result.summary);
         const baseUrl = window.location.origin;
         const link = document.createElement('a');
         link.href = `${baseUrl}${result.filePath}`;
-        link.download = result.filePath.split('/').pop() || 'summary.xlsx';
+        link.download = result.filePath.split('/').pop() || 'energy_summary.csv';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+
+        setExportMessage({
+          type: 'success',
+          text: `导出成功，共 ${result.summary.totalCount} 条记录`
+        });
       }
 
       const records = await api.export.list();
       setExportHistory(records);
     } catch (err: any) {
-      alert(err.message || '导出失败');
+      setExportMessage({
+        type: 'error',
+        text: err.message || '导出失败'
+      });
     } finally {
       setLoading(false);
     }
@@ -161,8 +210,18 @@ export function Export() {
               className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
             >
               <Download className="w-5 h-5" />
-              {loading ? '导出中...' : '导出Excel'}
+              {loading ? '导出中...' : '导出CSV'}
             </button>
+
+            {exportMessage && (
+              <div className={`mt-4 p-3 rounded-lg text-sm ${
+                exportMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
+                exportMessage.type === 'warning' ? 'bg-yellow-50 text-yellow-700 border border-yellow-200' :
+                'bg-red-50 text-red-700 border border-red-200'
+              }`}>
+                {exportMessage.text}
+              </div>
+            )}
           </div>
 
           {lastSummary && (
@@ -243,7 +302,7 @@ export function Export() {
               <li>• 数据明细导出完整的读数和异常记录</li>
               <li>• 汇总报表按能源类型统计总量和异常数</li>
               <li>• 可通过日期范围筛选导出特定时间段</li>
-              <li>• 导出文件格式为Excel (.xlsx)</li>
+              <li>• 导出文件格式为CSV (.csv)</li>
             </ul>
           </div>
         </div>

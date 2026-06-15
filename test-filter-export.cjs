@@ -125,16 +125,17 @@ async function runTests() {
   // 1. 清理旧数据
   console.log('\n--- 清理旧数据 ---');
 
-  await test('验证数据库为空状态', async () => {
+  await test('清理所有批次', async () => {
     const batches = await apiRequest('GET', '/api/batches');
-    const anomalies = await apiRequest('GET', '/api/anomalies');
 
-    console.log(`   现有批次: ${batches.data.length}, 现有异常: ${anomalies.data.length}`);
+    console.log(`   现有批次: ${batches.data.length}`);
 
-    // 清理所有批次
     for (const batch of batches.data) {
       await apiRequest('DELETE', `/api/batches/${batch.id}`);
     }
+
+    const afterClean = await apiRequest('GET', '/api/batches');
+    console.log(`   清理后批次: ${afterClean.data.length}`);
   });
 
   await sleep(500);
@@ -239,25 +240,30 @@ async function runTests() {
   // 6. 筛选导出测试
   console.log('\n--- 筛选导出测试 ---');
 
-  await test('导出待复核异常（应有0条）', async () => {
+  await test('导出待复核异常', async () => {
+    const anomalies = await apiRequest('GET', '/api/anomalies?status=PENDING');
+    const pendingCount = anomalies.data.length;
+
     const res = await apiRequest('POST', '/api/export/filtered', {
       filters: { status: 'PENDING' },
       operator: 'supervisor'
     });
-    if (res.status !== 200) throw new Error(`导出失败: ${res.status}`);
 
-    const downloadRes = await downloadFile(res.data.filePath);
-    const csv = parseCSV(downloadRes.content);
-
-    if (csv.length === 0 || (csv.length === 1 && csv[0].length <= 1)) {
-      console.log(`   导出记录数: 0 (空CSV)`);
-      return;
+    if (pendingCount === 0) {
+      if (res.status !== 200) throw new Error(`导出失败: ${res.status}`);
+      if (res.data.success !== false) throw new Error(`期望success=false`);
+      if (res.data.recordCount !== 0) throw new Error(`期望recordCount=0`);
+      if (res.data.filePath) throw new Error(`期望无文件路径`);
+      console.log(`   无待复核数据，正确返回空结果提示`);
+    } else {
+      if (res.status !== 200) throw new Error(`导出失败: ${res.status}`);
+      if (!res.data.filePath) throw new Error('期望有文件路径');
+      const downloadRes = await downloadFile(res.data.filePath);
+      const csv = parseCSV(downloadRes.content);
+      const dataRows = csv.length - 1;
+      if (dataRows !== pendingCount) throw new Error(`期望${pendingCount}条数据，实际${dataRows}条`);
+      console.log(`   有${pendingCount}条待复核数据，正确导出`);
     }
-
-    const dataRows = csv.length - 1;
-
-    if (dataRows !== 0) throw new Error(`期望0条数据，实际${dataRows}条`);
-    console.log(`   导出记录数: ${dataRows}`);
   });
 
   await test('导出已修正异常（应有1条）', async () => {

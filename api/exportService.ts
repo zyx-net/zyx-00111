@@ -69,7 +69,7 @@ export async function exportDetail(params: {
   batchId?: string;
   status?: string;
   type?: string;
-}, downloadedBy?: string): Promise<{ filePath: string; record: ExportRecord }> {
+}, downloadedBy?: string): Promise<{ filePath: string; record: ExportRecord; recordCount: number }> {
   const db = getDatabase();
   const now = new Date().toISOString();
 
@@ -143,6 +143,14 @@ export async function exportDetail(params: {
     'status', 'batch_no', 'anomaly_type', 'anomaly_status', 'remark'
   ];
 
+  if (data.length === 0) {
+    return {
+      filePath: '',
+      record: {} as ExportRecord,
+      recordCount: 0
+    };
+  }
+
   const meterTypeMap: Record<string, string> = {
     'WATER': '水',
     'ELECTRICITY': '电',
@@ -214,7 +222,7 @@ export async function exportDetail(params: {
     downloadedBy: downloadedBy || 'system'
   };
 
-  return { filePath, record };
+  return { filePath, record, recordCount: exportData.length };
 }
 
 export async function exportSummary(params: {
