@@ -67,6 +67,7 @@ function createTables(database: Database) {
       resolved_at TEXT,
       resolved_by TEXT,
       remark TEXT,
+      rule_snapshot TEXT,
       FOREIGN KEY (reading_id) REFERENCES meter_readings(id)
     )
   `);
@@ -81,6 +82,7 @@ function createTables(database: Database) {
       operated_at TEXT NOT NULL,
       version INTEGER NOT NULL,
       reading_id TEXT,
+      rule_snapshot TEXT,
       FOREIGN KEY (anomaly_id) REFERENCES anomalies(id)
     )
   `);
@@ -107,10 +109,47 @@ function createTables(database: Database) {
     )
   `);
 
+  database.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      role TEXT DEFAULT 'REVIEWER',
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS operation_logs (
+      id TEXT PRIMARY KEY,
+      operator TEXT NOT NULL,
+      operation_type TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT,
+      details TEXT,
+      ip_address TEXT,
+      operated_at TEXT NOT NULL
+    )
+  `);
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS batch_snapshots (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      snapshot_data TEXT NOT NULL,
+      anomaly_count INTEGER DEFAULT 0,
+      status_summary TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES batches(id)
+    )
+  `);
+
   database.run(`CREATE INDEX IF NOT EXISTS idx_meter_readings_meter_date ON meter_readings(meter_id, reading_date)`);
   database.run(`CREATE INDEX IF NOT EXISTS idx_meter_readings_batch ON meter_readings(batch_id)`);
   database.run(`CREATE INDEX IF NOT EXISTS idx_anomalies_status ON anomalies(status)`);
   database.run(`CREATE INDEX IF NOT EXISTS idx_anomalies_reading ON anomalies(reading_id)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_operation_logs_operator ON operation_logs(operator)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_operation_logs_type ON operation_logs(operation_type)`);
+  database.run(`CREATE INDEX IF NOT EXISTS idx_corrections_anomaly ON corrections(anomaly_id)`);
 }
 
 function insertDefaultRules(database: Database) {
@@ -125,6 +164,20 @@ function insertDefaultRules(database: Database) {
     database.run(
       `INSERT INTO rule_configs (id, config_key, config_value, version, effective_from, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
       [`rule_${index + 1}`, rule.key, rule.value, 1, now, now]
+    );
+  });
+
+  const defaultUsers = [
+    { id: 'user_admin', username: 'admin', role: 'ADMIN' },
+    { id: 'user_supervisor', username: 'supervisor', role: 'SUPERVISOR' },
+    { id: 'user_reviewer1', username: 'reviewer_1', role: 'REVIEWER' },
+    { id: 'user_reviewer2', username: 'reviewer_2', role: 'REVIEWER' },
+  ];
+
+  defaultUsers.forEach((user) => {
+    database.run(
+      `INSERT INTO users (id, username, role, created_at) VALUES (?, ?, ?, ?)`,
+      [user.id, user.username, user.role, now]
     );
   });
 }

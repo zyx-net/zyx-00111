@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase, saveDatabase } from './database.js';
 import { Correction, ConflictError } from './types.js';
+import { createRuleSnapshot } from './replayService.js';
 
 export async function correctAnomaly(
   anomalyId: string,
@@ -26,12 +27,28 @@ export async function correctAnomaly(
   columns.forEach((col, i) => { reading[col] = row[i]; });
 
   if (reading.version !== expectedVersion) {
+    const conflictResult = db.exec(`
+      SELECT operator, operated_at FROM corrections
+      WHERE anomaly_id = ? AND version >= ?
+      ORDER BY operated_at DESC LIMIT 1
+    `, [anomalyId, expectedVersion]);
+
+    let lastOperator: string | undefined;
+    let lastOperatedAt: string | undefined;
+    if (conflictResult.length > 0 && conflictResult[0].values.length > 0) {
+      lastOperator = conflictResult[0].values[0][0] as string;
+      lastOperatedAt = conflictResult[0].values[0][1] as string;
+    }
+
     return {
       success: false,
       error: {
         isConflict: true,
         message: '数据已被其他用户修改，请刷新后重试',
-        currentVersion: reading.version
+        currentVersion: reading.version,
+        previousValue: reading.corrected_value ?? reading.raw_value,
+        lastOperator,
+        lastOperatedAt
       }
     };
   }
@@ -49,10 +66,11 @@ export async function correctAnomaly(
 
   const correctionId = uuidv4();
   const originalValue = reading.corrected_value ?? reading.raw_value;
+  const ruleSnapshot = JSON.stringify(createRuleSnapshot());
 
   db.run(
-    `INSERT INTO corrections (id, anomaly_id, original_value, new_value, operator, operated_at, version, reading_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [correctionId, anomalyId, originalValue, newValue, operator, now, expectedVersion, reading.id]
+    `INSERT INTO corrections (id, anomaly_id, original_value, new_value, operator, operated_at, version, reading_id, rule_snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [correctionId, anomalyId, originalValue, newValue, operator, now, expectedVersion, reading.id, ruleSnapshot]
   );
 
   db.run(
@@ -61,8 +79,8 @@ export async function correctAnomaly(
   );
 
   db.run(
-    `UPDATE anomalies SET status = 'CORRECTED', resolved_at = ?, resolved_by = ? WHERE id = ?`,
-    [now, operator, anomalyId]
+    `UPDATE anomalies SET status = 'CORRECTED', resolved_at = ?, resolved_by = ?, rule_snapshot = ? WHERE id = ?`,
+    [now, operator, ruleSnapshot, anomalyId]
   );
 
   saveDatabase();
@@ -75,7 +93,8 @@ export async function correctAnomaly(
     operator,
     operatedAt: now,
     version: expectedVersion + 1,
-    readingId: reading.id
+    readingId: reading.id,
+    ruleSnapshot
   };
 
   return { success: true, correction };

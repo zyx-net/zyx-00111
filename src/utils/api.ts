@@ -1,4 +1,4 @@
-import { Batch, AnomalyWithReading, RuleConfig, ExportRecord, DashboardStats, ImportResult, MeterType } from '../types';
+import { Batch, AnomalyWithReading, RuleConfig, ExportRecord, DashboardStats, ImportResult, MeterType, User, BatchComparisonResult, MeterTrajectory, AnomalyReplay, ConflictError, BatchRevertResult, OperationLog } from '../types';
 
 const API_BASE = '/api';
 
@@ -17,6 +17,19 @@ async function fetchApi<T>(url: string, options?: RequestInit): Promise<T> {
   }
 
   return response.json();
+}
+
+async function fetchApiWithStatus<T>(url: string, options?: RequestInit): Promise<{ data: T; status: number }> {
+  const response = await fetch(`${API_BASE}${url}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+
+  const data = await response.json().catch(() => ({ error: 'Request failed' }));
+  return { data, status: response.status };
 }
 
 export const api = {
@@ -38,6 +51,21 @@ export const api = {
 
     delete: (id: string) =>
       fetchApi<{ success: boolean }>(`/batches/${id}`, { method: 'DELETE' }),
+
+    compare: (batch1Id: string, batch2Id: string) =>
+      fetchApi<BatchComparisonResult>('/batches/compare', {
+        method: 'POST',
+        body: JSON.stringify({ batch1Id, batch2Id }),
+      }),
+
+    getSnapshot: (batchId: string) =>
+      fetchApi<any>(`/batches/${batchId}/snapshot`),
+
+    revertAll: (batchId: string, operator: string) =>
+      fetchApi<BatchRevertResult>(`/batches/${batchId}/revert-all`, {
+        method: 'POST',
+        body: JSON.stringify({ operator }),
+      }),
   },
 
   anomalies: {
@@ -67,6 +95,37 @@ export const api = {
       fetchApi<{ success: boolean; message: string }>(`/anomalies/${id}/revert`, {
         method: 'POST',
       }),
+
+    checkConflict: async (id: string, currentVersion: number, operator: string): Promise<ConflictError | null> => {
+      const { data, status } = await fetchApiWithStatus<ConflictError>(`/anomalies/${id}/check-conflict?currentVersion=${currentVersion}&operator=${encodeURIComponent(operator)}`);
+      if (status === 409) {
+        return data;
+      }
+      return null;
+    },
+
+    verifyRevert: async (id: string, operator: string): Promise<boolean> => {
+      try {
+        const { status } = await fetchApiWithStatus<{ canRevert: boolean }>(`/anomalies/${id}/verify-revert`, {
+          method: 'POST',
+          body: JSON.stringify({ operator }),
+        });
+        return status === 200;
+      } catch {
+        return false;
+      }
+    },
+
+    getReplay: (id: string) => fetchApi<AnomalyReplay>(`/anomalies/${id}/replay`),
+  },
+
+  meters: {
+    getTrajectory: (meterId: string) => fetchApi<MeterTrajectory>(`/meters/${meterId}/trajectory`),
+  },
+
+  users: {
+    list: () => fetchApi<User[]>('/users'),
+    get: (username: string) => fetchApi<User>(`/users/${username}`),
   },
 
   rules: {
@@ -99,7 +158,37 @@ export const api = {
         body: JSON.stringify(params),
       }),
 
+    batchCompare: (batch1Id: string, batch2Id: string, operator: string) =>
+      fetchApi<{ filePath: string; record: ExportRecord }>('/export/batch-compare', {
+        method: 'POST',
+        body: JSON.stringify({ batch1Id, batch2Id, operator }),
+      }),
+
+    replay: (anomalyId: string, operator: string) =>
+      fetchApi<{ filePath: string; record: ExportRecord }>('/export/replay', {
+        method: 'POST',
+        body: JSON.stringify({ anomalyId, operator }),
+      }),
+
+    filtered: (filters: { status?: string; type?: string }, operator: string) =>
+      fetchApi<{ filePath: string; record: ExportRecord; count: number }>('/export/filtered', {
+        method: 'POST',
+        body: JSON.stringify({ filters, operator }),
+      }),
+
     list: () => fetchApi<ExportRecord[]>('/exports'),
+  },
+
+  logs: {
+    list: (filters?: { operator?: string; operationType?: string; fromDate?: string; toDate?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.operator) params.set('operator', filters.operator);
+      if (filters?.operationType) params.set('operationType', filters.operationType);
+      if (filters?.fromDate) params.set('fromDate', filters.fromDate);
+      if (filters?.toDate) params.set('toDate', filters.toDate);
+      const query = params.toString();
+      return fetchApi<OperationLog[]>(`/operation-logs${query ? `?${query}` : ''}`);
+    },
   },
 
   dashboard: {

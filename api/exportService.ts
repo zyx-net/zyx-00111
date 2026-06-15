@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 import { getDatabase, saveDatabase } from './database.js';
-import { ExportRecord, ExportType } from './types.js';
+import { ExportRecord, ExportType, BatchComparisonResult, AnomalyReplay } from './types.js';
 
 export async function exportDetail(params: {
   dateFrom?: string;
@@ -295,4 +295,210 @@ export async function getExportRecords(): Promise<ExportRecord[]> {
     });
     return record as ExportRecord;
   });
+}
+
+export async function exportBatchCompare(
+  comparison: BatchComparisonResult,
+  batch1Id: string,
+  batch2Id: string,
+  downloadedBy?: string
+): Promise<{ filePath: string; record: ExportRecord }> {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+
+  const batch1Result = db.exec(`SELECT batch_no, imported_at FROM batches WHERE id = ?`, [batch1Id]);
+  const batch2Result = db.exec(`SELECT batch_no, imported_at FROM batches WHERE id = ?`, [batch2Id]);
+
+  const batch1Info = batch1Result[0]?.values[0] || ['Batch 1', now];
+  const batch2Info = batch2Result[0]?.values[0] || ['Batch 2', now];
+
+  const workbook = XLSX.utils.book_new();
+
+  const summaryData = [
+    { '对比项': '批次1', '值': batch1Info[0] },
+    { '对比项': '批次1导入时间', '值': batch1Info[1] },
+    { '对比项': '批次2', '值': batch2Info[0] },
+    { '对比项': '批次2导入时间', '值': batch2Info[1] },
+    { '对比项': '新增异常数', '值': comparison.newAnomalies.length },
+    { '对比项': '已修正异常数', '值': comparison.correctedAnomalies.length },
+    { '对比项': '已忽略异常数', '值': comparison.ignoredAnomalies.length },
+    { '对比项': '已撤销异常数', '值': comparison.revertedAnomalies.length },
+    { '对比项': '未变化异常数', '值': comparison.unchangedAnomalies.length },
+  ];
+  const summarySheet = XLSX.utils.json_to_sheet(summaryData);
+  XLSX.utils.book_append_sheet(workbook, summarySheet, '对比汇总');
+
+  const newAnomalyData = comparison.newAnomalies.map(a => ({
+    '表计编号': a.meterId,
+    '能源类型': a.meterType === 'WATER' ? '水' : a.meterType === 'ELECTRICITY' ? '电' : '气',
+    '读数日期': a.readingDate,
+    '原始值': a.rawValue,
+    '异常类型': a.anomalyType === 'JUMP' ? '跳变' : a.anomalyType === 'MISSING' ? '缺失' : '回退',
+    '状态': '新增'
+  }));
+  const newAnomalySheet = XLSX.utils.json_to_sheet(newAnomalyData);
+  XLSX.utils.book_append_sheet(workbook, newAnomalySheet, '新增异常');
+
+  const correctedData = comparison.correctedAnomalies.map(a => ({
+    '表计编号': a.meterId,
+    '能源类型': a.meterType === 'WATER' ? '水' : a.meterType === 'ELECTRICITY' ? '电' : '气',
+    '读数日期': a.readingDate,
+    '原始值': a.rawValue,
+    '修正值': a.correctedValue ?? '-',
+    '异常类型': a.anomalyType === 'JUMP' ? '跳变' : a.anomalyType === 'MISSING' ? '缺失' : '回退',
+    '状态': '已修正'
+  }));
+  const correctedSheet = XLSX.utils.json_to_sheet(correctedData);
+  XLSX.utils.book_append_sheet(workbook, correctedSheet, '已修正异常');
+
+  const ignoredData = comparison.ignoredAnomalies.map(a => ({
+    '表计编号': a.meterId,
+    '能源类型': a.meterType === 'WATER' ? '水' : a.meterType === 'ELECTRICITY' ? '电' : '气',
+    '读数日期': a.readingDate,
+    '原始值': a.rawValue,
+    '备注': a.remark || '',
+    '异常类型': a.anomalyType === 'JUMP' ? '跳变' : a.anomalyType === 'MISSING' ? '缺失' : '回退',
+    '状态': '已忽略'
+  }));
+  const ignoredSheet = XLSX.utils.json_to_sheet(ignoredData);
+  XLSX.utils.book_append_sheet(workbook, ignoredSheet, '已忽略异常');
+
+  const revertedData = comparison.revertedAnomalies.map(a => ({
+    '表计编号': a.meterId,
+    '能源类型': a.meterType === 'WATER' ? '水' : a.meterType === 'ELECTRICITY' ? '电' : '气',
+    '读数日期': a.readingDate,
+    '原始值': a.rawValue,
+    '异常类型': a.anomalyType === 'JUMP' ? '跳变' : a.anomalyType === 'MISSING' ? '缺失' : '回退',
+    '状态': '已撤销'
+  }));
+  const revertedSheet = XLSX.utils.json_to_sheet(revertedData);
+  XLSX.utils.book_append_sheet(workbook, revertedSheet, '已撤销异常');
+
+  const trajectoryData = comparison.meterTrajectory.flatMap(t => {
+    const rows: any[] = [];
+    t.readings.forEach(r => {
+      const anomaly = t.anomalies.find(a => a.readingId === r.id);
+      const corrections = t.corrections.filter(c => c.readingId === r.id);
+      rows.push({
+        '表计编号': t.meterId,
+        '能源类型': t.meterType === 'WATER' ? '水' : t.meterType === 'ELECTRICITY' ? '电' : '气',
+        '读数日期': r.readingDate,
+        '原始值': r.rawValue,
+        '修正值': r.correctedValue ?? '-',
+        '异常状态': anomaly?.status || '-',
+        '修正次数': corrections.length,
+        '处理人': corrections[0]?.operator || '-',
+        '批次': r.batchId === batch1Id ? batch1Info[0] : batch2Info[0]
+      });
+    });
+    return rows;
+  });
+  const trajectorySheet = XLSX.utils.json_to_sheet(trajectoryData);
+  XLSX.utils.book_append_sheet(workbook, trajectorySheet, '表计轨迹');
+
+  const fileName = `batch_compare_${Date.now()}.xlsx`;
+  const filePath = `./exports/${fileName}`;
+
+  const exportDir = './exports';
+  const fs = await import('fs');
+  if (!fs.existsSync(exportDir)) {
+    fs.mkdirSync(exportDir, { recursive: true });
+  }
+
+  XLSX.writeFile(workbook, filePath);
+
+  const recordId = uuidv4();
+  db.run(
+    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by) VALUES (?, ?, ?, ?, ?)`,
+    [recordId, 'BATCH_COMPARE', JSON.stringify({ batch1Id, batch2Id }), now, downloadedBy || 'system']
+  );
+  saveDatabase();
+
+  const record: ExportRecord = {
+    id: recordId,
+    exportType: 'BATCH_COMPARE' as ExportType,
+    params: JSON.stringify({ batch1Id, batch2Id }),
+    downloadedAt: now,
+    downloadedBy: downloadedBy || 'system'
+  };
+
+  return { filePath, record };
+}
+
+export async function exportReplay(
+  replay: AnomalyReplay,
+  downloadedBy?: string
+): Promise<{ filePath: string; record: ExportRecord }> {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+
+  const workbook = XLSX.utils.book_new();
+
+  const anomalyInfo = [
+    { '项目': '异常ID', '值': replay.anomalyId },
+    { '项目': '表计编号', '值': replay.meterId },
+    { '项目': '能源类型', '值': replay.meterType === 'WATER' ? '水' : replay.meterType === 'ELECTRICITY' ? '电' : '气' },
+    { '项目': '读数日期', '值': replay.readingDate },
+    { '项目': '原始值', '值': replay.rawValue },
+    { '项目': '修正值', '值': replay.correctedValue ?? '-' },
+    { '项目': '异常类型', '值': replay.anomalyType === 'JUMP' ? '跳变' : replay.anomalyType === 'MISSING' ? '缺失' : '回退' },
+    { '项目': '初始状态', '值': '待复核' },
+    { '项目': '最终状态', '值': replay.finalStatus === 'CORRECTED' ? '已修正' : replay.finalStatus === 'IGNORED' ? '已忽略' : replay.finalStatus === 'REVERTED' ? '已撤销' : '待复核' },
+  ];
+  const infoSheet = XLSX.utils.json_to_sheet(anomalyInfo);
+  XLSX.utils.book_append_sheet(workbook, infoSheet, '异常信息');
+
+  const correctionData = replay.corrections.map(c => ({
+    '操作人': c.operator,
+    '原值': c.originalValue,
+    '新值': c.newValue,
+    '操作时间': c.operatedAt,
+    '版本': c.version
+  }));
+  const correctionSheet = XLSX.utils.json_to_sheet(correctionData);
+  XLSX.utils.book_append_sheet(workbook, correctionSheet, '修正历史');
+
+  const ruleData = replay.ruleSnapshot.map(r => ({
+    '配置项': r.configKey === 'jumpThreshold' ? '跳变阈值' : r.configKey === 'missingDays' ? '缺失判定天数' : '回退检测开关',
+    '配置值': r.configKey === 'rollbackEnabled' ? (r.configValue === 'true' ? '启用' : '禁用') : r.configValue,
+    '版本': r.version,
+    '生效时间': r.effectiveFrom
+  }));
+  const ruleSheet = XLSX.utils.json_to_sheet(ruleData);
+  XLSX.utils.book_append_sheet(workbook, ruleSheet, '阈值配置');
+
+  const timelineData = replay.processedAt.map((t, i) => ({
+    '时间': t,
+    '事件': i === 0 ? '检测到异常' : i === replay.processedAt.length - 1 ? '处理完成' : `第${i}次修正`
+  }));
+  const timelineSheet = XLSX.utils.json_to_sheet(timelineData);
+  XLSX.utils.book_append_sheet(workbook, timelineSheet, '处理时间线');
+
+  const fileName = `anomaly_replay_${replay.anomalyId}_${Date.now()}.xlsx`;
+  const filePath = `./exports/${fileName}`;
+
+  const exportDir = './exports';
+  const fs = await import('fs');
+  if (!fs.existsSync(exportDir)) {
+    fs.mkdirSync(exportDir, { recursive: true });
+  }
+
+  XLSX.writeFile(workbook, filePath);
+
+  const recordId = uuidv4();
+  db.run(
+    `INSERT INTO export_records (id, export_type, params, downloaded_at, downloaded_by) VALUES (?, ?, ?, ?, ?)`,
+    [recordId, 'REPLAY', JSON.stringify({ anomalyId: replay.anomalyId }), now, downloadedBy || 'system']
+  );
+  saveDatabase();
+
+  const record: ExportRecord = {
+    id: recordId,
+    exportType: 'REPLAY' as ExportType,
+    params: JSON.stringify({ anomalyId: replay.anomalyId }),
+    downloadedAt: now,
+    downloadedBy: downloadedBy || 'system'
+  };
+
+  return { filePath, record };
 }

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../utils/api';
-import { Batch, AnomalyWithReading, RuleConfig, DashboardStats, MeterType } from '../types';
+import { Batch, AnomalyWithReading, RuleConfig, DashboardStats, MeterType, User, BatchComparisonResult, AnomalyReplay, OperationLog } from '../types';
 
 interface AppState {
   batches: Batch[];
@@ -12,10 +12,19 @@ interface AppState {
   loading: boolean;
   error: string | null;
   currentOperator: string;
+  currentUser: User | null;
+  batchComparison: BatchComparisonResult | null;
+  anomalyReplay: AnomalyReplay | null;
+  operationLogs: OperationLog[];
+  savedFilters: { status: string; type: string };
+  savedBatchCompare: { batch1Id: string; batch2Id: string } | null;
 
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   setCurrentOperator: (operator: string) => void;
+  setCurrentUser: (user: User | null) => void;
+  saveFilters: (filters: { status: string; type: string }) => void;
+  saveBatchCompare: (compare: { batch1Id: string; batch2Id: string } | null) => void;
 
   fetchBatches: () => Promise<void>;
   fetchAnomalies: (filters?: { status?: string; type?: string }) => Promise<void>;
@@ -23,6 +32,8 @@ interface AppState {
   fetchRules: () => Promise<void>;
   fetchRuleHistory: () => Promise<void>;
   fetchDashboardStats: () => Promise<void>;
+  fetchUsers: () => Promise<void>;
+  fetchOperationLogs: (filters?: { operator?: string; operationType?: string }) => Promise<void>;
 
   importReadings: (readings: Array<{
     meterId: string;
@@ -37,7 +48,32 @@ interface AppState {
   deleteBatch: (id: string) => Promise<void>;
   updateRules: (configs: Array<{ key: string; value: string }>) => Promise<void>;
   rollbackRules: (version: number) => Promise<void>;
+
+  compareBatches: (batch1Id: string, batch2Id: string) => Promise<void>;
+  getAnomalyReplay: (anomalyId: string) => Promise<void>;
+  revertBatch: (batchId: string) => Promise<void>;
+  exportBatchCompare: (batch1Id: string, batch2Id: string) => Promise<void>;
+  exportFiltered: (filters: { status?: string; type?: string }) => Promise<void>;
+  exportReplay: (anomalyId: string) => Promise<void>;
 }
+
+const loadSavedState = () => {
+  try {
+    const savedFilters = localStorage.getItem('reviewFilters');
+    const savedBatchCompare = localStorage.getItem('batchCompare');
+    return {
+      savedFilters: savedFilters ? JSON.parse(savedFilters) : { status: '', type: '' },
+      savedBatchCompare: savedBatchCompare ? JSON.parse(savedBatchCompare) : null
+    };
+  } catch {
+    return {
+      savedFilters: { status: '', type: '' },
+      savedBatchCompare: null
+    };
+  }
+};
+
+const savedState = loadSavedState();
 
 export const useStore = create<AppState>((set, get) => ({
   batches: [],
@@ -48,11 +84,33 @@ export const useStore = create<AppState>((set, get) => ({
   dashboardStats: null,
   loading: false,
   error: null,
-  currentOperator: 'operator_1',
+  currentOperator: 'reviewer_1',
+  currentUser: null,
+  batchComparison: null,
+  anomalyReplay: null,
+  operationLogs: [],
+  savedFilters: savedState.savedFilters,
+  savedBatchCompare: savedState.savedBatchCompare,
 
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error }),
-  setCurrentOperator: (operator) => set({ currentOperator: operator }),
+  setCurrentOperator: (operator) => {
+    set({ currentOperator: operator });
+    localStorage.setItem('currentOperator', operator);
+  },
+  setCurrentUser: (user) => set({ currentUser: user }),
+  saveFilters: (filters) => {
+    set({ savedFilters: filters });
+    localStorage.setItem('reviewFilters', JSON.stringify(filters));
+  },
+  saveBatchCompare: (compare) => {
+    set({ savedBatchCompare: compare });
+    if (compare) {
+      localStorage.setItem('batchCompare', JSON.stringify(compare));
+    } else {
+      localStorage.removeItem('batchCompare');
+    }
+  },
 
   fetchBatches: async () => {
     try {
@@ -98,6 +156,26 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const dashboardStats = await api.dashboard.stats();
       set({ dashboardStats });
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  fetchUsers: async () => {
+    try {
+      const users = await api.users.list();
+      const currentOperator = localStorage.getItem('currentOperator') || 'reviewer_1';
+      const currentUser = users.find(u => u.username === currentOperator) || users[0];
+      set({ currentUser });
+    } catch (error: any) {
+      set({ error: error.message });
+    }
+  },
+
+  fetchOperationLogs: async (filters) => {
+    try {
+      const operationLogs = await api.logs.list(filters);
+      set({ operationLogs });
     } catch (error: any) {
       set({ error: error.message });
     }
@@ -188,6 +266,79 @@ export const useStore = create<AppState>((set, get) => ({
       await api.rules.rollback(version);
       await get().fetchRules();
       await get().fetchRuleHistory();
+      set({ loading: false });
+    } catch (error: any) {
+      set({ error: error.message, loading: false });
+      throw error;
+    }
+  },
+
+  compareBatches: async (batch1Id, batch2Id) => {
+    try {
+      set({ loading: true, error: null });
+      const comparison = await api.batches.compare(batch1Id, batch2Id);
+      set({ batchComparison: comparison, loading: false });
+      get().saveBatchCompare({ batch1Id, batch2Id });
+    } catch (error: any) {
+      set({ error: error.message, loading: false });
+      throw error;
+    }
+  },
+
+  getAnomalyReplay: async (anomalyId) => {
+    try {
+      set({ loading: true, error: null });
+      const replay = await api.anomalies.getReplay(anomalyId);
+      set({ anomalyReplay: replay, loading: false });
+    } catch (error: any) {
+      set({ error: error.message, loading: false });
+      throw error;
+    }
+  },
+
+  revertBatch: async (batchId) => {
+    try {
+      set({ loading: true, error: null });
+      await api.batches.revertAll(batchId, get().currentOperator);
+      await get().fetchBatches();
+      await get().fetchAnomalies();
+      await get().fetchDashboardStats();
+      set({ loading: false });
+    } catch (error: any) {
+      set({ error: error.message, loading: false });
+      throw error;
+    }
+  },
+
+  exportBatchCompare: async (batch1Id, batch2Id) => {
+    try {
+      set({ loading: true, error: null });
+      const result = await api.export.batchCompare(batch1Id, batch2Id, get().currentOperator);
+      window.open(result.filePath.replace('./', '/api/'), '_blank');
+      set({ loading: false });
+    } catch (error: any) {
+      set({ error: error.message, loading: false });
+      throw error;
+    }
+  },
+
+  exportFiltered: async (filters) => {
+    try {
+      set({ loading: true, error: null });
+      const result = await api.export.filtered(filters, get().currentOperator);
+      window.open(result.filePath.replace('./', '/api/'), '_blank');
+      set({ loading: false });
+    } catch (error: any) {
+      set({ error: error.message, loading: false });
+      throw error;
+    }
+  },
+
+  exportReplay: async (anomalyId) => {
+    try {
+      set({ loading: true, error: null });
+      const result = await api.export.replay(anomalyId, get().currentOperator);
+      window.open(result.filePath.replace('./', '/api/'), '_blank');
       set({ loading: false });
     } catch (error: any) {
       set({ error: error.message, loading: false });

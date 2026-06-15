@@ -5,8 +5,12 @@ import { importBatch, getBatches, getBatchById, getReadingsByBatchId, deleteBatc
 import { detectAnomalies, createAnomalyRecords, getAnomalies, getAnomalyById, ignoreAnomaly, revertAnomaly, createMissingAnomalies, detectMissingReadings } from './anomalyService.js';
 import { correctAnomaly, getCorrectionHistory } from './correctionService.js';
 import { getCurrentRules, updateRules, getRuleHistory, rollbackToVersion } from './ruleService.js';
-import { exportDetail, exportSummary, getExportRecords } from './exportService.js';
-import { MeterReading, AnomalyWithReading, MeterType } from './types.js';
+import { exportDetail, exportSummary, getExportRecords, exportBatchCompare, exportReplay } from './exportService.js';
+import { getUserByUsername, getAllUsers, canExportBatch, canRevertBatch, canViewAnomaly, canRevertAnomaly, createOperationLog, getOperationLogs } from './userService.js';
+import { compareBatches, getMeterTrajectory, createBatchSnapshot, getBatchSnapshot } from './batchCompareService.js';
+import { getAnomalyReplay, createRuleSnapshot } from './replayService.js';
+import { getDatabase } from './database.js';
+import { MeterReading, AnomalyWithReading, MeterType, BatchRevertResult } from './types.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -365,6 +369,291 @@ app.get('/api/dashboard/stats', async (req, res) => {
       recentAnomalies: recentList,
       typeStats
     });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/users', async (req, res) => {
+  try {
+    const users = await getAllUsers();
+    res.json(users);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/users/:username', async (req, res) => {
+  try {
+    const user = await getUserByUsername(req.params.username);
+    if (!user) {
+      return res.status(404).json({ error: '用户不存在' });
+    }
+    res.json(user);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/operation-logs', async (req, res) => {
+  try {
+    const { operator, operationType, fromDate, toDate } = req.query as any;
+    const logs = await getOperationLogs({
+      operator,
+      operationType,
+      fromDate,
+      toDate
+    });
+    res.json(logs);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/batches/compare', async (req, res) => {
+  try {
+    const { batch1Id, batch2Id } = req.body;
+    if (!batch1Id || !batch2Id) {
+      return res.status(400).json({ error: '缺少批次ID参数' });
+    }
+    const comparison = await compareBatches(batch1Id, batch2Id);
+    res.json(comparison);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/batches/:id/snapshot', async (req, res) => {
+  try {
+    let snapshot = await getBatchSnapshot(req.params.id);
+    if (!snapshot) {
+      snapshot = await createBatchSnapshot(req.params.id);
+    }
+    res.json(snapshot);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/meters/:meterId/trajectory', async (req, res) => {
+  try {
+    const trajectory = await getMeterTrajectory(req.params.meterId);
+    if (!trajectory) {
+      return res.status(404).json({ error: '表计不存在' });
+    }
+    res.json(trajectory);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/anomalies/:id/replay', async (req, res) => {
+  try {
+    const replay = await getAnomalyReplay(req.params.id);
+    if (!replay) {
+      return res.status(404).json({ error: '异常记录不存在' });
+    }
+    res.json(replay);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/batches/:id/revert-all', async (req, res) => {
+  try {
+    const { operator } = req.body;
+    const user = await getUserByUsername(operator);
+
+    if (!user || !canRevertBatch(user)) {
+      return res.status(403).json({ error: '权限不足，只有主管可以撤销整批操作' });
+    }
+
+    const db = getDatabase();
+    const readings = await getReadingsByBatchId(req.params.id);
+
+    const result: BatchRevertResult = {
+      success: true,
+      revertedCount: 0,
+      failedCount: 0,
+      details: []
+    };
+
+    for (const reading of readings) {
+      const anomalyResults = db.exec(`
+        SELECT id, status FROM anomalies WHERE reading_id = ? AND status IN ('CORRECTED', 'IGNORED')
+      `, [reading.id]);
+
+      if (anomalyResults.length > 0 && anomalyResults[0].values.length > 0) {
+        for (const row of anomalyResults[0].values) {
+          const anomalyId = row[0] as string;
+          const revertResult = await revertAnomaly(anomalyId);
+          if (revertResult.success) {
+            result.revertedCount++;
+            result.details.push({ anomalyId, success: true });
+          } else {
+            result.failedCount++;
+            result.details.push({ anomalyId, success: false, message: revertResult.message });
+          }
+        }
+      }
+    }
+
+    await createOperationLog(operator, 'BATCH_REVERT', 'batch', req.params.id, JSON.stringify({
+      revertedCount: result.revertedCount,
+      failedCount: result.failedCount
+    }));
+
+    await updateBatchAnomalyCount(req.params.id);
+
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/export/batch-compare', async (req, res) => {
+  try {
+    const { batch1Id, batch2Id, operator } = req.body;
+
+    const user = await getUserByUsername(operator);
+    if (!user || !canExportBatch(user)) {
+      return res.status(403).json({ error: '权限不足，只有主管可以导出批次对比' });
+    }
+
+    const comparison = await compareBatches(batch1Id, batch2Id);
+    const exportResult = await exportBatchCompare(comparison, batch1Id, batch2Id, operator);
+
+    await createOperationLog(operator, 'EXPORT', 'batch_compare', `${batch1Id}_${batch2Id}`, JSON.stringify({
+      batch1Id,
+      batch2Id,
+      newAnomalies: comparison.newAnomalies.length,
+      correctedAnomalies: comparison.correctedAnomalies.length
+    }));
+
+    res.json({
+      filePath: exportResult.filePath,
+      record: exportResult.record
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/export/replay', async (req, res) => {
+  try {
+    const { anomalyId, operator } = req.body;
+
+    const user = await getUserByUsername(operator);
+    if (!user || !canExportBatch(user)) {
+      return res.status(403).json({ error: '权限不足，只有主管可以导出回放数据' });
+    }
+
+    const replay = await getAnomalyReplay(anomalyId);
+    if (!replay) {
+      return res.status(404).json({ error: '异常记录不存在' });
+    }
+
+    const exportResult = await exportReplay(replay, operator);
+
+    await createOperationLog(operator, 'EXPORT', 'anomaly_replay', anomalyId);
+
+    res.json({
+      filePath: exportResult.filePath,
+      record: exportResult.record
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/export/filtered', async (req, res) => {
+  try {
+    const { filters, operator } = req.body;
+
+    const user = await getUserByUsername(operator);
+    if (!user || !canExportBatch(user)) {
+      return res.status(403).json({ error: '权限不足，只有主管可以导出筛选结果' });
+    }
+
+    const anomalies = await getAnomalies(filters);
+    const exportResult = await exportDetail({ ...filters, exportType: 'FILTERED' }, operator);
+
+    await createOperationLog(operator, 'EXPORT', 'filtered_anomalies', undefined, JSON.stringify(filters));
+
+    res.json({
+      filePath: exportResult.filePath,
+      record: exportResult.record,
+      count: anomalies.length
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/anomalies/:id/check-conflict', async (req, res) => {
+  try {
+    const { currentVersion, operator } = req.query as any;
+
+    const anomaly = await getAnomalyById(req.params.id);
+    if (!anomaly) {
+      return res.status(404).json({ error: '异常记录不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user || !canViewAnomaly(user, anomaly.resolvedBy)) {
+      return res.status(403).json({ error: '您没有权限查看此异常记录' });
+    }
+
+    if (currentVersion && anomaly.currentVersion !== currentVersion) {
+      const dbModule = await import('./database.js');
+      const db = dbModule.getDatabase();
+      const correctionResult = db.exec(`
+        SELECT operator, operated_at FROM corrections
+        WHERE anomaly_id = ? AND version >= ?
+        ORDER BY operated_at DESC LIMIT 1
+      `, [req.params.id, currentVersion]);
+
+      let lastOperator = undefined;
+      let lastOperatedAt = undefined;
+      if (correctionResult.length > 0 && correctionResult[0].values.length > 0) {
+        lastOperator = correctionResult[0].values[0][0];
+        lastOperatedAt = correctionResult[0].values[0][1];
+      }
+
+      return res.status(409).json({
+        isConflict: true,
+        message: '数据已被其他用户修改，请刷新后重试',
+        currentVersion: anomaly.currentVersion,
+        previousValue: anomaly.correctedValue ?? anomaly.rawValue,
+        lastOperator,
+        lastOperatedAt
+      });
+    }
+
+    res.json({ isConflict: false, currentVersion: anomaly.currentVersion });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/anomalies/:id/verify-revert', async (req, res) => {
+  try {
+    const { operator } = req.body;
+
+    const anomaly = await getAnomalyById(req.params.id);
+    if (!anomaly) {
+      return res.status(404).json({ error: '异常记录不存在' });
+    }
+
+    const user = await getUserByUsername(operator);
+    if (!user || !canRevertAnomaly(user, anomaly.resolvedBy)) {
+      return res.status(403).json({
+        error: '权限不足',
+        message: '只有原始处理人或主管可以撤销此异常'
+      });
+    }
+
+    res.json({ canRevert: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
