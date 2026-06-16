@@ -14,7 +14,9 @@ const DATASETS = [
   { id: 'dataset_heat', name: '热力数据集' },
   { id: 'dataset_test1', name: '测试数据集1' },
   { id: 'dataset_test2', name: '测试数据集2' },
-  { id: 'dataset_test3', name: '测试数据集3' }
+  { id: 'dataset_test3', name: '测试数据集3' },
+  { id: 'dataset_test4', name: '测试数据集4' },
+  { id: 'dataset_test5', name: '测试数据集5' }
 ];
 
 async function sleep(ms) {
@@ -407,7 +409,7 @@ async function runCompleteTest() {
     
     let order1;
     try {
-      order1 = await testCreateChangeOrder('admin', 5, false, true);
+      order1 = await testCreateChangeOrder('admin', 0, false, true);
       results.tests.push({ name: '创建变更单', success: true });
       results.success++;
       
@@ -500,7 +502,7 @@ async function runCompleteTest() {
     console.log('测试 7: 撤回功能');
     console.log('═══════════════════════════════════════════════════════════════');
     
-    const order4 = await testCreateChangeOrder('admin', 2, false);
+    const order4 = await testCreateChangeOrder('admin', 8, false);
     await testSubmitChangeOrder(order4.id, 'admin');
     
     await testWithdrawChangeOrder(order4.id, 'admin', '测试撤回功能');
@@ -511,7 +513,7 @@ async function runCompleteTest() {
     console.log('测试 8: 驳回功能');
     console.log('═══════════════════════════════════════════════════════════════');
     
-    const order5 = await testCreateChangeOrder('admin', 0, false);
+    const order5 = await testCreateChangeOrder('admin', 9, false);
     await testSubmitChangeOrder(order5.id, 'admin');
     
     await testRejectChangeOrder(order5.id, 'supervisor', '数据验证未通过');

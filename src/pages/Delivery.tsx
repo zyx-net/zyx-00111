@@ -414,7 +414,7 @@ export function Delivery() {
                       <Package className="w-5 h-5 text-blue-500" />
                       <span className="font-medium text-slate-800">{pkg.packageName}</span>
                       {pkg.lockedBy && (
-                        <Lock className="w-4 h-4 text-orange-500" title={`已被 ${pkg.lockedBy} 锁定`} />
+                        <Lock className="w-4 h-4 text-orange-500" />
                       )}
                     </div>
                   </td>

@@ -513,7 +513,7 @@ export function Export() {
                         <button
                           onClick={() => {
                             const link = document.createElement('a');
-                            link.href = `${serverUrl}/exports/${record.fileName}`;
+                            link.href = `${getApiServer()}/exports/${record.fileName}`;
                             link.download = record.fileName;
                             document.body.appendChild(link);
                             link.click();
