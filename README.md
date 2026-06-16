@@ -13,6 +13,7 @@
 - **冲突检测**：多用户并发操作时版本冲突检测
 - **数据持久化**：SQLite本地存储，系统重启后数据一致
 - **完整审计**：所有操作留痕，支持权限隔离和越权访问检测
+- **数据发布工单中心**：完整的申请、审批、执行、撤回、追溯链路
 
 ## 技术栈
 
@@ -565,6 +566,121 @@ node generate-delivery-sample.cjs
 | 重启后状态丢失 | 数据库未保存 | 检查database.ts saveDatabase调用 |
 | 版本号不正确 | 重建后未重新生成 | 重建后需要重新生成文件 |
 | 越权访问未被记录 | 审计日志接口问题 | 检查审计日志查询 |
+
+## 数据发布工单中心
+
+### 功能概述
+
+数据发布工单中心提供完整的变更管理生命周期，支持申请、审批、执行、撤回、追溯全链路管理。
+
+### 核心功能
+
+1. **工单管理**
+   - 创建变更单（支持多种变更类型：SCHEMA_CHANGE、DATA_MIGRATION、CALCULATION_RULE、FIELD_MAPPING）
+   - 变更单列表、详情、创建入口
+   - 版本历史查看
+   - 执行历史查看
+   - 操作日志查询
+
+2. **审批流程**
+   - 提交审批
+   - 审批通过/驳回
+   - 审批角色从配置读取
+   - 权限校验
+
+3. **执行管理**
+   - 执行变更单
+   - 执行状态跟踪
+   - 执行历史记录
+
+4. **撤回功能**
+   - 撤回变更单
+   - 根据配置判断是否强制填写撤回说明
+   - 撤回历史记录
+
+5. **冲突检测**
+   - 同一数据集在冲突时间窗内的变更单拦截
+   - 冲突原因记录
+   - 冲突时间窗从配置读取
+
+6. **服务重启恢复**
+   - 待执行和执行中的单子从SQLite恢复
+   - 配置信息持久化
+
+### API接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /api/change-orders | 创建变更单 |
+| GET | /api/change-orders | 查询变更单列表 |
+| GET | /api/change-orders/:id | 查询变更单详情 |
+| POST | /api/change-orders/:id/submit | 提交审批 |
+| POST | /api/change-orders/:id/approve | 审批通过 |
+| POST | /api/change-orders/:id/reject | 驳回审批 |
+| POST | /api/change-orders/:id/execute | 执行变更单 |
+| POST | /api/change-orders/:id/rollback | 撤回变更单 |
+| POST | /api/change-orders/:id/withdraw | 撤销变更单 |
+| GET | /api/change-orders/:id/versions | 查询版本历史 |
+| GET | /api/change-orders/:id/execution-history | 查询执行历史 |
+| GET | /api/change-orders/:id/audit-logs | 查询审计日志 |
+| GET | /api/change-orders/:id/conflicts | 查询冲突记录 |
+| POST | /api/change-orders/export-summary | 导出摘要 |
+| GET | /api/change-orders/pending-execution | 查询待执行变更单 |
+| GET | /api/change-orders/system/recovery | 系统恢复接口 |
+| GET | /api/change-order-config | 查询配置 |
+| PUT | /api/change-order-config | 更新配置 |
+
+### 配置说明
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| approval_roles | 可审批变更单的角色列表 | ADMIN,SUPERVISOR |
+| auto_conflict_check | 是否自动检测冲突 | true |
+| conflict_time_window_hours | 冲突检测时间窗口（小时） | 24 |
+| max_effective_delay_hours | 最大生效延迟时间（小时） | 168 |
+| require_rollback_description | 是否强制填写撤回说明 | true |
+| rollback_retention_days | 撤回数据保留天数 | 30 |
+
+### 验证指南
+
+#### 完整链路验证
+
+```bash
+# 运行完整测试套件
+node test-change-center-complete.cjs
+```
+
+#### 测试覆盖场景
+
+1. **完整链路测试**：创建→提交→审批→执行→回滚
+2. **冲突检测测试**：同一数据集在冲突时间窗内的变更单拦截
+3. **权限隔离测试**：权限受限用户无法越权操作
+4. **重启恢复测试**：服务重启后数据恢复
+5. **配置管理测试**：配置读取和更新
+
+#### 关键验证点
+
+1. **创建变更单**：字段校验失败返回清晰错误信息（HTTP 400）
+2. **冲突检测**：同一数据集在冲突时间窗内出现两张单子时拦截并记录原因
+3. **权限控制**：ADMIN和SUPERVISOR可审批，REVIEWER不可审批
+4. **撤回说明**：配置为true时必须填写撤回说明
+5. **服务重启**：待执行和执行中的单子从SQLite恢复
+
+### 测试脚本说明
+
+**test-change-center-complete.cjs**：完整功能测试脚本，验证：
+- 配置管理接口
+- 创建、提交、审批、执行、回滚完整链路
+- 冲突检测与拦截
+- 权限隔离
+- 重启恢复机制
+- 导出摘要
+- 撤回功能
+
+### 页面入口
+
+- **变更中心**：访问 http://localhost:5173/change-center
+- 包含列表、详情、创建、历史查看入口
 
 ## License
 

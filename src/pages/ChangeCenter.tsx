@@ -57,6 +57,10 @@ export function ChangeCenter() {
   const [error, setError] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<any[]>([]);
   const [showConflicts, setShowConflicts] = useState(false);
+  const [versions, setVersions] = useState<any[]>([]);
+  const [showVersions, setShowVersions] = useState(false);
+  const [executionHistory, setExecutionHistory] = useState<any[]>([]);
+  const [showExecutionHistory, setShowExecutionHistory] = useState(false);
 
   const [newOrder, setNewOrder] = useState({
     title: '',
@@ -110,6 +114,28 @@ export function ChangeCenter() {
       const data = await response.json();
       setConflicts(Array.isArray(data) ? data : []);
       setShowConflicts(true);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const loadVersions = async (orderId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/change-orders/${orderId}/versions?operator=${currentUser}`);
+      const data = await response.json();
+      setVersions(Array.isArray(data) ? data : []);
+      setShowVersions(true);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const loadExecutionHistory = async (orderId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/change-orders/${orderId}/execution-history?operator=${currentUser}`);
+      const data = await response.json();
+      setExecutionHistory(Array.isArray(data) ? data : []);
+      setShowExecutionHistory(true);
     } catch (err: any) {
       setError(err.message);
     }
@@ -702,6 +728,18 @@ export function ChangeCenter() {
                       >
                         查看冲突
                       </button>
+                      <button
+                        onClick={() => loadVersions(selectedOrder.id)}
+                        className="w-full px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200"
+                      >
+                        查看版本历史
+                      </button>
+                      <button
+                        onClick={() => loadExecutionHistory(selectedOrder.id)}
+                        className="w-full px-4 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200"
+                      >
+                        查看执行历史
+                      </button>
                     </div>
                   </div>
 
@@ -756,6 +794,90 @@ export function ChangeCenter() {
                       </div>
                     )}
                   </div>
+
+                  {showVersions && (
+                    <div className="border-t pt-4">
+                      <div className="flex justify-between items-center mb-2">
+                        <h3 className="text-sm font-medium text-gray-700">版本历史</h3>
+                        <button
+                          onClick={() => setShowVersions(false)}
+                          className="text-xs text-gray-400 hover:text-gray-600"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {versions.length === 0 ? (
+                        <div className="text-sm text-gray-500">暂无版本历史</div>
+                      ) : (
+                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                          {versions.map((version) => (
+                            <div key={version.id} className="text-sm border-l-2 border-purple-200 pl-3">
+                              <div className="flex justify-between items-start">
+                                <div>
+                                  <span className="font-medium text-gray-900">版本 {version.version}</span>
+                                  <span className="ml-2 text-gray-600">by {version.createdBy}</span>
+                                </div>
+                                <span className="text-xs text-gray-400">
+                                  {new Date(version.createdAt).toLocaleString()}
+                                </span>
+                              </div>
+                              {version.changeSummary && (
+                                <div className="text-xs text-gray-500 mt-1">{version.changeSummary}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {showExecutionHistory && (
+                    <div className="border-t pt-4">
+                      <div className="flex justify-between items-center mb-2">
+                        <h3 className="text-sm font-medium text-gray-700">执行历史</h3>
+                        <button
+                          onClick={() => setShowExecutionHistory(false)}
+                          className="text-xs text-gray-400 hover:text-gray-600"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      {executionHistory.length === 0 ? (
+                        <div className="text-sm text-gray-500">暂无执行历史</div>
+                      ) : (
+                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                          {executionHistory.map((history) => (
+                            <div key={history.id} className="text-sm border-l-2 border-green-200 pl-3">
+                              <div className="flex justify-between items-start">
+                                <div>
+                                  <span className="font-medium text-gray-900">{history.executionType}</span>
+                                  <span className="ml-2 text-gray-600">by {history.executedBy}</span>
+                                </div>
+                                <span className="text-xs text-gray-400">
+                                  {new Date(history.executedAt).toLocaleString()}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-500 mt-1">
+                                {history.previousValue !== undefined && (
+                                  <span>原值: {history.previousValue} → </span>
+                                )}
+                                <span>新值: {history.newValue}</span>
+                              </div>
+                              {history.executionResult && (
+                                <div className="text-xs mt-1">
+                                  <span className={`px-1 py-0.5 rounded ${
+                                    history.executionResult.includes('SUCCESS') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                                  }`}>
+                                    {history.executionResult}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (

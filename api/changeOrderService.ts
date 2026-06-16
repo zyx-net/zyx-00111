@@ -86,6 +86,11 @@ function generateOrderNo(): string {
   return `CO${year}${month}${day}${random}`;
 }
 
+export interface ValidationError {
+  field: string;
+  message: string;
+}
+
 export async function createChangeOrder(
   title: string,
   orderType: string,
@@ -99,6 +104,93 @@ export async function createChangeOrder(
   rollbackDescription?: string,
   rollbackRetentionDays?: number
 ): Promise<ChangeOrder> {
+  const errors: ValidationError[] = [];
+
+  if (!title || title.trim().length === 0) {
+    errors.push({ field: 'title', message: '标题不能为空' });
+  } else if (title.length > 200) {
+    errors.push({ field: 'title', message: '标题长度不能超过200个字符' });
+  }
+
+  if (!orderType || orderType.trim().length === 0) {
+    errors.push({ field: 'orderType', message: '变更类型不能为空' });
+  } else if (!['SCHEMA_CHANGE', 'DATA_MIGRATION', 'CALCULATION_RULE', 'FIELD_MAPPING'].includes(orderType)) {
+    errors.push({ field: 'orderType', message: '无效的变更类型，可选值: SCHEMA_CHANGE, DATA_MIGRATION, CALCULATION_RULE, FIELD_MAPPING' });
+  }
+
+  if (!datasetId || datasetId.trim().length === 0) {
+    errors.push({ field: 'datasetId', message: '数据集ID不能为空' });
+  } else if (datasetId.length > 100) {
+    errors.push({ field: 'datasetId', message: '数据集ID长度不能超过100个字符' });
+  }
+
+  if (!datasetName || datasetName.trim().length === 0) {
+    errors.push({ field: 'datasetName', message: '数据集名称不能为空' });
+  } else if (datasetName.length > 200) {
+    errors.push({ field: 'datasetName', message: '数据集名称长度不能超过200个字符' });
+  }
+
+  if (!fieldChanges || fieldChanges.length === 0) {
+    errors.push({ field: 'fieldChanges', message: '至少需要添加一个字段变更' });
+  } else {
+    for (let i = 0; i < fieldChanges.length; i++) {
+      const change = fieldChanges[i];
+      if (!change.fieldName || change.fieldName.trim().length === 0) {
+        errors.push({ field: `fieldChanges[${i}].fieldName`, message: `第${i + 1}个字段变更的字段名不能为空` });
+      }
+      if (!change.fieldLabel || change.fieldLabel.trim().length === 0) {
+        errors.push({ field: `fieldChanges[${i}].fieldLabel`, message: `第${i + 1}个字段变更的字段标签不能为空` });
+      }
+      if (!['ADD', 'MODIFY', 'DELETE'].includes(change.changeType)) {
+        errors.push({ field: `fieldChanges[${i}].changeType`, message: `第${i + 1}个字段变更的变更类型无效，可选值: ADD, MODIFY, DELETE` });
+      }
+    }
+  }
+
+  if (!effectiveTime || effectiveTime.trim().length === 0) {
+    errors.push({ field: 'effectiveTime', message: '生效时间不能为空' });
+  } else {
+    try {
+      const effectiveDate = new Date(effectiveTime);
+      if (isNaN(effectiveDate.getTime())) {
+        errors.push({ field: 'effectiveTime', message: '生效时间格式无效，应为 ISO 格式' });
+      } else {
+        const config = await getChangeOrderConfig('max_effective_delay_hours');
+        const maxDelayHours = parseInt(config?.configValue || '168');
+        const maxEffectiveTime = new Date();
+        maxEffectiveTime.setHours(maxEffectiveTime.getHours() + maxDelayHours);
+        
+        if (effectiveDate > maxEffectiveTime) {
+          errors.push({ field: 'effectiveTime', message: `生效时间不能超过${maxDelayHours}小时后` });
+        }
+      }
+    } catch {
+      errors.push({ field: 'effectiveTime', message: '生效时间格式无效' });
+    }
+  }
+
+  if (!createdBy || createdBy.trim().length === 0) {
+    errors.push({ field: 'createdBy', message: '创建人不能为空' });
+  }
+
+  const requireRollbackDesc = await getChangeOrderConfig('require_rollback_description');
+  if (requireRollbackDesc?.configValue === 'true') {
+    if (!rollbackDescription || rollbackDescription.trim().length === 0) {
+      errors.push({ field: 'rollbackDescription', message: '回滚说明不能为空（根据配置要求）' });
+    } else if (rollbackDescription.length < 10) {
+      errors.push({ field: 'rollbackDescription', message: '回滚说明至少需要10个字符' });
+    }
+  }
+
+  if (priority && !['LOW', 'NORMAL', 'HIGH', 'URGENT'].includes(priority)) {
+    errors.push({ field: 'priority', message: '无效的优先级，可选值: LOW, NORMAL, HIGH, URGENT' });
+  }
+
+  if (errors.length > 0) {
+    const errorMessage = errors.map(e => `${e.field}: ${e.message}`).join('; ');
+    throw new Error(`参数校验失败: ${errorMessage}`);
+  }
+
   const db = getDatabase();
   const now = new Date().toISOString();
   const id = generateUUID();
@@ -364,6 +456,16 @@ export async function withdrawChangeOrder(id: string, operator: string, reason?:
     throw new Error('当前状态不允许撤回');
   }
 
+  const config = await getChangeOrderConfig('require_rollback_description');
+  if (config?.configValue === 'true') {
+    if (!reason || reason.trim().length === 0) {
+      throw new Error('撤回说明不能为空（根据配置要求）');
+    }
+    if (reason.length < 5) {
+      throw new Error('撤回说明至少需要5个字符');
+    }
+  }
+
   const now = new Date().toISOString();
   db.run(`
     UPDATE change_orders 
@@ -439,7 +541,7 @@ export async function checkConflicts(orderId: string, datasetId: string, effecti
     FROM change_orders 
     WHERE dataset_id = ? 
       AND id != ?
-      AND status IN ('APPROVED', 'PENDING_EXECUTION', 'EXECUTING', 'COMPLETED')
+      AND status IN ('PENDING_APPROVAL', 'APPROVED', 'PENDING_EXECUTION', 'EXECUTING', 'COMPLETED')
       AND effective_time BETWEEN ? AND ?
     ORDER BY effective_time ASC
   `, [datasetId, orderId, startWindow.toISOString(), endWindow.toISOString()]);
@@ -456,6 +558,33 @@ export async function checkConflicts(orderId: string, datasetId: string, effecti
     status: row[4] as ChangeOrderStatus,
     conflictType: 'TIME_OVERLAP'
   }));
+
+  if (orderId !== 'NEW') {
+    const now = new Date().toISOString();
+    for (const conflict of conflicts) {
+      const existingConflict = db.exec(`
+        SELECT id FROM change_order_conflicts 
+        WHERE (order_id = ? AND conflicting_order_id = ?) 
+           OR (order_id = ? AND conflicting_order_id = ?)
+      `, [orderId, conflict.orderId, conflict.orderId, orderId]);
+
+      if (existingConflict.length === 0 || existingConflict[0].values.length === 0) {
+        db.run(`
+          INSERT INTO change_order_conflicts (
+            id, order_id, conflicting_order_id, conflict_type, conflict_time_window, resolution, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+          generateUUID(),
+          orderId,
+          conflict.orderId,
+          'TIME_OVERLAP',
+          `${windowHours}小时`,
+          'PENDING',
+          now
+        ]);
+      }
+    }
+  }
 
   return {
     isConflict: true,
