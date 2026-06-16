@@ -12,7 +12,9 @@
     "server:dev": "nodemon",
     "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\"",
     "server": "node dist/api/server.js",
-    "build:server": "tsc -p tsconfig.api.json"
+    "build:server": "tsc -p tsconfig.api.json",
+    "import-samples": "node import-change-center-samples.cjs",
+    "test-change-center": "node test-change-center-complete.cjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
